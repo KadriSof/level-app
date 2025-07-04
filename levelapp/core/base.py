@@ -15,5 +15,3 @@ class Comparator(ABC):
     def evaluate(self):
         """Evaluate system output against expected output."""
         pass
-
-
