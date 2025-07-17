@@ -1,0 +1,526 @@
+"""
+'simulators/service.py': Service layer to manage conversation simulation and evaluation.
+"""
+
+import asyncio
+import logging
+import time
+import uuid
+from collections import defaultdict
+from datetime import datetime
+from http.client import HTTPException
+from typing import Dict, Any, List
+
+from .base import BaseDatastore, BaseEvaluator
+from ..simulator.schemas import (
+    InteractionEvaluationResult,
+    BatchDetails,
+    TestResults,
+    VLAConfig, ScriptsBatch,
+)
+from ..simulator.utils import (
+    extract_interaction_details,
+    async_vla_request,
+    date_value_setter,
+    calculate_average_scores,
+    summarize_verdicts,
+)
+
+
+class ConversationSimulator:
+    """Service to simulate conversations and evaluate interactions."""
+
+    def __init__(
+        self,
+        firestore_service: BaseDatastore,
+        evaluation_service: BaseEvaluator,
+        api_configuration: VLAConfig,
+        logger: logging.Logger,
+    ):
+        """
+        Initialize the ConversationSimulator.
+
+        Args:
+            firestore_service (FirestoreService): Service for saving simulation results.
+            evaluation_service (EvaluationService): Service for evaluating interactions.
+            api_configuration (VLAConfig): Configuration object for VLA.
+            logger (logging.Logger): Logger instance.
+        """
+        self.evaluation_service = evaluation_service
+        self.firestore_service = firestore_service
+        # TODO: Keep for now until we add a config method.
+        self.api_configuration = api_configuration
+        self.logger = logging.getLogger("?")
+
+        self._endpoint = api_configuration.full_url
+        self._credentials = api_configuration.api_key
+        self._headers = api_configuration.headers
+
+        self.test_batch = None
+        self.evaluation_verdicts: Dict[str, List[str]] = defaultdict(list)
+        self.verdict_summaries: Dict[str, List[str]] = defaultdict(list)
+
+    async def run_batch_test(
+        self,
+        test_batch: ScriptsBatch,
+        batch_details: BatchDetails,
+        test_details: TestResults,
+        attempts: int = 1,
+    ) -> Dict[str, Any]:
+        """
+        Run a batch test for the given batch name and details.
+
+        Args:
+            test_batch (ScriptsBatch): Scenario batch object.
+            batch_details (Dict[str, Any]): Test batch test details.
+            test_details (Dict[str, Any]): Test details dictionary.
+            attempts (int): Number of attempts to run the simulation.
+
+        Returns:
+            Dict[str, Any]: The results of the batch test.
+        """
+        self.logger.info(
+            f"[run_batch_test] Starting batch test for batch: {test_details.test_name}"
+        )
+        started_at = datetime.now().isoformat()
+        start_time = time.time()
+
+        self.test_batch = test_batch
+        results = await self.simulate_conversation(attempts=attempts)
+
+        finished_at = datetime.now().isoformat()
+        elapsed_time = time.time() - start_time
+
+        batch_details.started_at = started_at
+        batch_details.finished_at = finished_at
+        batch_details.elapsed_time = elapsed_time
+        batch_details.evaluation_summary = self.verdict_summaries
+        batch_details.average_scores = results["averageScores"]
+        batch_details.simulation_results = results["scenarios"]
+
+        test_details.batch_details = batch_details
+
+        try:
+            self.firestore_service.save_batch_test_results(
+                user_id=batch_details.user_id,
+                project_id=batch_details.project_id,
+                batch_id=batch_details.batch_id,
+                data=test_details.model_dump(by_alias=True),
+            )
+
+        except KeyError as e:
+            self.logger.error(
+                f"[run_batch_test] Missing required batch detail key: {e}"
+            )
+        except HTTPException as e:
+            self.logger.error(f"[run_batch_test] Failed to save batch result: {e}")
+
+        return {"batchId": batch_details.batch_id, "status": "COMPLETE"}
+
+    async def simulate_conversation(self, attempts: int = 1) -> Dict[str, Any]:
+        """
+        Simulate conversations for all scenarios in the batch.
+
+        Args:
+            attempts (int): Number of attempts to run the simulation.
+
+        Returns:
+            Dict[str, Any]: The results of the conversation simulation.
+        """
+        self.logger.info("[simulate_conversation] starting conversation simulation..")
+        self.test_batch = date_value_setter(self.test_batch)
+        semaphore = asyncio.Semaphore(value=len(self.test_batch.scenarios))
+
+        async def run_with_semaphore(scenario: SimulationScenario) -> Dict[str, Any]:
+            async with semaphore:
+                return await self.simulate_single_scenario(
+                    scenario=scenario, attempts=attempts
+                )
+
+        results = await asyncio.gather(
+            *(run_with_semaphore(s) for s in self.test_batch.scenarios)
+        )
+
+        aggregate_scores: Dict[str, List[float]] = defaultdict(list)
+        for scenarios_results in results:
+            for key, value in scenarios_results.get("averageScores", {}).items():
+                if isinstance(value, (int, float)):
+                    aggregate_scores[key].append(value)
+
+        overall_average_scores = calculate_average_scores(aggregate_scores)
+
+        for judge, verdicts in self.evaluation_verdicts.items():
+            self.verdict_summaries[judge] = summarize_verdicts(
+                verdicts=verdicts, judge=judge
+            )
+
+        return {"scenarios": results, "averageScores": overall_average_scores}
+
+    async def simulate_single_scenario(
+        self, scenario: SimulationScenario, attempts: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Simulate a single scenario with the given number of attempts, concurrently.
+
+        Args:
+            scenario (SimulationScenario): The scenario to simulate.
+            attempts (int): Number of attempts to run the simulation.
+
+        Returns:
+            Dict[str, Any]: The results of the scenario simulation.
+        """
+        self.logger.info(
+            f"[simulate_single_scenario] starting simulation for scenario: {scenario.scenario_title}"
+        )
+        all_attempts_scores: Dict[str, List[float]] = defaultdict(list)
+        all_attempts_verdicts: Dict[str, List[str]] = defaultdict(list)
+
+        async def simulate_attempt(attempt_number: int) -> Dict[str, Any]:
+            self.logger.info(
+                f"[simulate_single_scenario] Running attempt: {attempt_number + 1}/{attempts}"
+            )
+            start_time = time.time()
+
+            collected_scores: Dict[str, List[Any]] = defaultdict(list)
+            collected_verdicts: Dict[str, List[str]] = defaultdict(list)
+            conversation_id = "batch-" + str(uuid.uuid4())
+
+            initial_interaction_results = await self.simulate_initial_interaction(
+                scenario=scenario,
+                conversation_id=conversation_id,
+                evaluation_verdicts=collected_verdicts,
+                collected_scores=collected_scores,
+            )
+
+            if initial_interaction_results["interactionType"] in (
+                "handoff",
+                "newBooking",
+            ):
+                inbound_interactions_results = None
+            else:
+                inbound_interactions_results = await self.simulate_inbound_interactions(
+                    scenario=scenario,
+                    conversation_id=conversation_id,
+                    evaluation_verdicts=collected_verdicts,
+                    collected_scores=collected_scores,
+                )
+
+            single_attempt_scores = calculate_average_scores(collected_scores)
+
+            for target, scores in single_attempt_scores.items():
+                all_attempts_scores[target].append(scores)
+
+            for judge, verdicts in collected_verdicts.items():
+                all_attempts_verdicts[judge].extend(verdicts)
+
+            elapsed_time = time.time() - start_time
+            all_attempts_scores["processingTime"].append(elapsed_time)
+
+            self.logger.info(
+                f"[simulate_single_scenario] Attempt {attempt_number + 1} completed in {elapsed_time:.2f}s\n---"
+            )
+
+            return {
+                "attemptId": attempt_number + 1,
+                "conversationId": conversation_id,
+                "totalDurationSeconds": elapsed_time,
+                "initialInteraction": initial_interaction_results,
+                "inboundInteractions": inbound_interactions_results,
+                "globalJustification": collected_verdicts,
+                "averageScores": single_attempt_scores,
+            }
+
+        attempt_tasks = [simulate_attempt(i) for i in range(attempts)]
+        attempt_results = await asyncio.gather(*attempt_tasks, return_exceptions=False)
+
+        average_scores = calculate_average_scores(all_attempts_scores)
+        for judge_, verdicts_ in all_attempts_verdicts.items():
+            self.evaluation_verdicts[judge_].extend(verdicts_)
+
+        self.logger.info(
+            f"[simulate_single_conversation] average scores:\n{average_scores}\n---"
+        )
+
+        return {
+            "scenarioId": scenario.scenario_title.replace(" ", "-"),
+            "scenarioName": scenario.scenario_title,
+            "attempts": attempt_results,
+            "averageScores": average_scores,
+        }
+
+    async def simulate_initial_interaction(
+        self,
+        scenario: SimulationScenario,
+        conversation_id: str,
+        evaluation_verdicts: Dict[str, List[str]],
+        collected_scores: Dict[str, List[Any]],
+    ) -> Dict[str, Any]:
+        """
+        Simulate the initial interaction for a scenario.
+
+        Args:
+            scenario (SimulationScenario): The scenario to simulate.
+            conversation_id (str): The conversation ID.
+            evaluation_verdicts(Dict[str, List[str]]):
+            collected_scores(Dict[str, List[Any]]):
+
+        Returns:
+            Dict[str, Any]: The results of the initial interaction simulation.
+        """
+        self.logger.info(
+            "[simulate_initial_interaction] Starting initial interaction simulation.."
+        )
+        start_time = time.time()
+
+        initial_interaction = scenario.initial_interaction
+        initial_interaction.conversation_id = conversation_id
+        initial_interaction.interaction_details.timestamp = (
+            datetime.now().isoformat() + "Z"
+        )
+
+        response = await async_vla_request(
+            url=self._endpoint,
+            headers=self._headers,
+            payload=initial_interaction.model_dump(by_alias=True),
+        )
+
+        reference_vla_repy = scenario.expected_initial_reply
+        reference_metadata = scenario.expected_metadata.model_dump(by_alias=True)
+        reference_guardrail_flag: bool = (
+            scenario.initial_interaction.expected_handoff_pass
+        )
+
+        if not response or response.status_code != 200:
+            self.logger.error("[simulate_initial_interaction] VLA request failed.")
+            return {
+                "userMessage": initial_interaction.interaction_details.initial_message,
+                "vlaInitialReply": "VLA request failed",
+                "expectedVlaReply": reference_vla_repy,
+                "extractedMetadata": {},
+                "expectedMetadata": reference_metadata,
+                "handoffDetails": None,
+                "interactionType": "",
+                "evaluationResults": {},
+            }
+
+        interaction_details = extract_interaction_details(response_text=response.text)
+
+        extracted_vla_reply = interaction_details.vla_reply
+        extracted_metadata = interaction_details.extracted_metadata
+        extracted_guardrail_flag: bool = interaction_details.handoff_details is not None
+
+        evaluation_results = await self.evaluate_interaction(
+            extracted_vla_reply=extracted_vla_reply,
+            reference_vla_reply=reference_vla_repy,
+            extracted_metadata=extracted_metadata,
+            reference_metadata=reference_metadata,
+            extracted_guardrail=extracted_guardrail_flag,
+            reference_guardrail=reference_guardrail_flag,
+        )
+
+        self.store_evaluation_results(
+            results=evaluation_results,
+            evaluation_verdicts=evaluation_verdicts,
+            collected_scores=collected_scores,
+        )
+
+        elapsed_time = time.time() - start_time
+        self.logger.info(
+            f"[simulate_initial_interaction] Simulation complete in {elapsed_time:.2f} seconds\n---"
+        )
+
+        return {
+            "userMessage": initial_interaction.interaction_details.initial_message,
+            "vlaInitialReply": extracted_vla_reply,
+            "expectedVlaReply": reference_vla_repy,
+            "extractedMetadata": extracted_metadata,
+            "expectedMetadata": reference_metadata,
+            "handoffDetails": interaction_details.handoff_details,
+            "interactionType": interaction_details.interaction_type,
+            "evaluationResults": evaluation_results.model_dump(),
+        }
+
+    async def simulate_inbound_interactions(
+        self,
+        scenario: SimulationScenario,
+        conversation_id: str,
+        evaluation_verdicts: Dict[str, List[str]],
+        collected_scores: Dict[str, List[Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Simulate inbound interactions for a scenario.
+
+        Args:
+            scenario (SimulationScenario): The scenario to simulate.
+            conversation_id (str): The conversation ID.
+            evaluation_verdicts(Dict[str, List[str]]): evaluation verdict for each evaluator.
+            collected_scores(Dict[str, List[Any]]): collected scores for each target.
+
+        Returns:
+            List[Dict[str, Any]]: The results of the inbound interactions simulation.
+        """
+        self.logger.info(
+            "[simulate_inbound_interactions] Starting inbound interactions simulation.."
+        )
+        start_time = time.time()
+
+        results = []
+        inbound_interactions_sequence = scenario.inbound_interactions
+
+        for interaction in inbound_interactions_sequence:
+            interaction.conversation_id = conversation_id
+            user_message = interaction.inbound_interaction_payload.message_content
+
+            response = await async_vla_request(
+                url=self._endpoint,
+                headers=self._headers,
+                payload=interaction.model_dump(by_alias=True),
+            )
+
+            reference_vla_repy = interaction.expected_vla_reply
+            reference_metadata = interaction.expected_metadata.model_dump(by_alias=True)
+            reference_guardrail_flag: bool = interaction.expected_handoff_pass
+
+            if not response or response.status_code != 200:
+                self.logger.error("[simulate_inbound_interaction] VLA request failed.")
+                result = {
+                    "userMessage": user_message,
+                    "vlaReply": "VLA Request failed",
+                    "expectedVlaReply": reference_vla_repy,
+                    "extractedMetadata": {},
+                    "expectedMetadata": reference_metadata,
+                    "handoffDetails": None,
+                    "interactionType": "",
+                    "evaluationResults": {},
+                }
+                results.append(result)
+                continue
+
+            interaction_details = extract_interaction_details(
+                response_text=response.text
+            )
+
+            extracted_vla_reply = interaction_details.vla_reply
+            extracted_metadata = interaction_details.extracted_metadata
+            extracted_guardrail_flag: bool = (
+                interaction_details.handoff_details is not None
+            )
+
+            if interaction_details.interaction_type in ("handoff", "newBooking"):
+                self.logger.info(
+                    "[simulate_initial_interaction] Handoff detected. Leaving inbound simulation."
+                )
+                continue
+
+            evaluation_results = await self.evaluate_interaction(
+                extracted_vla_reply=extracted_vla_reply,
+                reference_vla_reply=reference_vla_repy,
+                extracted_metadata=extracted_metadata,
+                reference_metadata=reference_metadata,
+                extracted_guardrail=extracted_guardrail_flag,
+                reference_guardrail=reference_guardrail_flag,
+            )
+
+            self.store_evaluation_results(
+                results=evaluation_results,
+                evaluation_verdicts=evaluation_verdicts,
+                collected_scores=collected_scores,
+            )
+
+            elapsed_time = time.time() - start_time
+            self.logger.info(
+                f"[simulate_initial_interaction] Simulation complete in {elapsed_time:.2f} seconds.\n---"
+            )
+
+            result = {
+                "userMessage": user_message,
+                "vlaReply": extracted_vla_reply,
+                "expectedVlaReply": reference_vla_repy,
+                "extractedMetadata": extracted_metadata,
+                "expectedMetadata": reference_metadata,
+                "handoffDetails": interaction_details.handoff_details,
+                "evaluationResults": evaluation_results.model_dump(),
+            }
+
+            results.append(result)
+
+        return results
+
+    async def evaluate_interaction(
+        self,
+        extracted_vla_reply: str,
+        reference_vla_reply: str,
+        extracted_metadata: Dict[str, Any],
+        reference_metadata: Dict[str, Any],
+        extracted_guardrail: bool,
+        reference_guardrail: bool,
+    ) -> InteractionEvaluationResult:
+        """
+        Evaluate an interaction using OpenAI and Ionos evaluation services.
+
+        Args:
+            extracted_vla_reply (str): The extracted VLA reply.
+            reference_vla_reply (str): The reference VLA reply.
+            extracted_metadata (Dict[str, Any]): The extracted metadata.
+            reference_metadata (Dict[str, Any]): The reference metadata.
+            extracted_guardrail (bool): extracted handoff/guardrail flag.
+            reference_guardrail (bool): reference handoff/guardrail flag.
+
+        Returns:
+            InteractionEvaluationResult: The evaluation results.
+        """
+        openai_eval_task = self.evaluation_service.evaluate_response(
+            provider="openai",
+            output_text=extracted_vla_reply,
+            reference_text=reference_vla_reply,
+        )
+
+        ionos_eval_task = self.evaluation_service.evaluate_response(
+            provider="ionos",
+            output_text=extracted_vla_reply,
+            reference_text=reference_vla_reply,
+        )
+
+        openai_reply_evaluation, ionos_reply_evaluation = await asyncio.gather(
+            openai_eval_task, ionos_eval_task
+        )
+
+        extracted_metadata_evaluation = evaluate_metadata(
+            expected=reference_metadata,
+            actual=extracted_metadata,
+        )
+
+        guardrail_flag = 1 if extracted_guardrail == reference_guardrail else 0
+
+        return InteractionEvaluationResult(
+            openaiReplyEvaluation=openai_reply_evaluation,
+            ionosReplyEvaluation=ionos_reply_evaluation,
+            extractedMetadataEvaluation=extracted_metadata_evaluation,
+            guardrailFlag=guardrail_flag,
+        )
+
+    @staticmethod
+    def store_evaluation_results(
+        results: InteractionEvaluationResult,
+        evaluation_verdicts: Dict[str, List[str]],
+        collected_scores: Dict[str, List[Any]],
+    ) -> None:
+        """
+        Store the evaluation results in the evaluation summary.
+
+        Args:
+            results (InteractionEvaluationResult): The evaluation results to store.
+            evaluation_verdicts (Dict[str, List[str]]): The evaluation summary.
+            collected_scores (Dict[str, List[Any]]): The collected scores.
+        """
+        evaluation_verdicts["openaiJustificationSummary"].append(
+            results.openaiReplyEvaluation.justification
+        )
+        evaluation_verdicts["ionosJustificationSummary"].append(
+            results.ionosReplyEvaluation.justification
+        )
+
+        collected_scores["openai"].append(results.openaiReplyEvaluation.match_level)
+        collected_scores["ionos"].append(results.ionosReplyEvaluation.match_level)
+        collected_scores["metadata"].append(results.extractedMetadataEvaluation)
+        collected_scores["guardrail"].append(results.guardrailFlag)
