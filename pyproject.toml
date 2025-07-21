@@ -7,7 +7,9 @@ authors = [
     { name = "KadriSof", email = "kadrisofyen@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "requests>=2.32.4",
+]
 
 [project.scripts]
 level-app = "level_app:main"

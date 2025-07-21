@@ -29,6 +29,24 @@ class BaseEvaluator(ABC):
         raise NotImplementedError
 
 
+class BaseChatClient(ABC):
+    """Abstract base chat client for different LLM providers integration."""
+    @abstractmethod
+    def call(self, message: str, model: str, **kwargs) -> Dict[str, Any]:
+        """
+        Send a message to the LLM provider and return the response.
+
+        Args:
+            message: The message to send to the LLM.
+            model: The model identifier to use for generating the response.
+            **kwargs: Additional provider-specific arguments.
+
+        Returns:
+            A dictionary containing the response from the LLM provider.
+        """
+        raise NotImplementedError
+
+
 class BaseDatastore(ABC):
     """Abstract base class for data stores."""
     @abstractmethod
