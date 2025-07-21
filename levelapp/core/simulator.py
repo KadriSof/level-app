@@ -294,7 +294,6 @@ class ConversationSimulator:
                     "generated_metadata": {},
                     "reference_metadata": reference_metadata,
                     "guardrail_details": None,
-                    "interaction_type": "",
                     "evaluation_results": {},
                 }
                 results.append(result)
@@ -306,24 +305,18 @@ class ConversationSimulator:
                 response_text=response.text
             )
 
-            extracted_vla_reply = interaction_details.generated_reply
-            extracted_metadata = interaction_details.generated_metadata
+            generated_reply = interaction_details.generated_reply
+            generated_metadata = interaction_details.generated_metadata
             extracted_guardrail_flag: bool = (
                     interaction_details.guardrail_details is not None
             )
 
-            if interaction_details.interaction_type in ("handoff", "newBooking"):
-                self.logger.info(
-                    "[simulate_initial_interaction] Handoff detected. Leaving inbound simulation."
-                )
-                continue
-
             evaluation_results = await self.evaluate_interaction(
-                extracted_vla_reply=extracted_vla_reply,
-                reference_vla_reply=reference_reply,
-                extracted_metadata=extracted_metadata,
+                generated_reply=generated_reply,
+                reference_reply=reference_reply,
+                generated_metadata=generated_metadata,
                 reference_metadata=reference_metadata,
-                extracted_guardrail=extracted_guardrail_flag,
+                generated_guardrail=extracted_guardrail_flag,
                 reference_guardrail=reference_guardrail_flag,
             )
 
@@ -339,13 +332,13 @@ class ConversationSimulator:
             )
 
             result = {
-                "userMessage": user_message,
-                "vlaReply": extracted_vla_reply,
-                "expectedVlaReply": reference_reply,
-                "extractedMetadata": extracted_metadata,
-                "expectedMetadata": reference_metadata,
-                "handoffDetails": interaction_details.guardrail_details,
-                "evaluationResults": evaluation_results.model_dump(),
+                "user_message": user_message,
+                "generated_reply": generated_reply,
+                "reference_reply": reference_reply,
+                "generated_metadata": generated_metadata,
+                "reference_metadata": reference_metadata,
+                "guardrail_details": interaction_details.guardrail_details,
+                "evaluation_results": evaluation_results.model_dump(),
             }
 
             results.append(result)
@@ -354,22 +347,22 @@ class ConversationSimulator:
 
     async def evaluate_interaction(
         self,
-        extracted_vla_reply: str,
-        reference_vla_reply: str,
-        extracted_metadata: Dict[str, Any],
+        generated_reply: str,
+        reference_reply: str,
+        generated_metadata: Dict[str, Any],
         reference_metadata: Dict[str, Any],
-        extracted_guardrail: bool,
+        generated_guardrail: bool,
         reference_guardrail: bool,
     ) -> InteractionEvaluationResult:
         """
         Evaluate an interaction using OpenAI and Ionos evaluation services.
 
         Args:
-            extracted_vla_reply (str): The extracted VLA reply.
-            reference_vla_reply (str): The reference VLA reply.
-            extracted_metadata (Dict[str, Any]): The extracted metadata.
+            generated_reply (str): The generated agent reply.
+            reference_reply (str): The reference agent reply.
+            generated_metadata (Dict[str, Any]): The generated metadata.
             reference_metadata (Dict[str, Any]): The reference metadata.
-            extracted_guardrail (bool): extracted handoff/guardrail flag.
+            generated_guardrail (bool): generated handoff/guardrail flag.
             reference_guardrail (bool): reference handoff/guardrail flag.
 
         Returns:
@@ -377,14 +370,14 @@ class ConversationSimulator:
         """
         openai_eval_task = self.evaluation_service.evaluate_response(
             provider="openai",
-            output_text=extracted_vla_reply,
-            reference_text=reference_vla_reply,
+            output_text=generated_reply,
+            reference_text=reference_reply,
         )
 
         ionos_eval_task = self.evaluation_service.evaluate_response(
             provider="ionos",
-            output_text=extracted_vla_reply,
-            reference_text=reference_vla_reply,
+            output_text=generated_reply,
+            reference_text=reference_reply,
         )
 
         openai_reply_evaluation, ionos_reply_evaluation = await asyncio.gather(
@@ -393,10 +386,10 @@ class ConversationSimulator:
 
         extracted_metadata_evaluation = evaluate_metadata(
             expected=reference_metadata,
-            actual=extracted_metadata,
+            actual=generated_metadata,
         )
 
-        guardrail_flag = 1 if extracted_guardrail == reference_guardrail else 0
+        guardrail_flag = 1 if generated_guardrail == reference_guardrail else 0
 
         return InteractionEvaluationResult(
             openaiReplyEvaluation=openai_reply_evaluation,
