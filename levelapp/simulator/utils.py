@@ -13,7 +13,7 @@ from openai import OpenAI
 from pydantic import ValidationError
 
 from firestore.schemas import ScenarioBatch
-from schemas import VLAInteractionDetails
+from schemas import InteractionResults
 
 
 logger = logging.getLogger("batch-test-cloud-function")
@@ -21,7 +21,7 @@ logger = logging.getLogger("batch-test-cloud-function")
 
 def extract_interaction_details(
         response_text: str,
-) -> VLAInteractionDetails:
+) -> InteractionResults:
     """
     Extract interaction details from a VLA response.
 
@@ -29,13 +29,13 @@ def extract_interaction_details(
         response_text (str): The response text from the VLA.
 
     Returns:
-        VLAInteractionDetails: The extracted interaction details.
+        InteractionResults: The extracted interaction details.
     """
     try:
         data = json.loads(response_text)
         payload = data.get("payload", {})
 
-        return VLAInteractionDetails(
+        return InteractionResults(
             vla_reply=payload.get("message", "No response"),
             extracted_metadata=payload.get("metadata", {}),
             handoff_details=payload.get("handoffMetadata", {}),
@@ -44,7 +44,7 @@ def extract_interaction_details(
 
     except json.JSONDecodeError as err:
         logger.error(f"[extract_interaction_details] JSON decoding error: {err}")
-        return VLAInteractionDetails(
+        return InteractionResults(
             vla_reply="VLA request failed.",
             extracted_metadata={},
             handoff_details={},
@@ -53,7 +53,7 @@ def extract_interaction_details(
 
     except ValidationError as err:
         logger.error(f"[extract_interaction_details] Pydantic validation error: {err}")
-        return VLAInteractionDetails(
+        return InteractionResults(
             vla_reply="VLA request failed.",
             extracted_metadata={},
             handoff_details={},

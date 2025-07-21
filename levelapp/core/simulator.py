@@ -16,7 +16,7 @@ from ..simulator.schemas import (
     InteractionEvaluationResult,
     BatchDetails,
     TestResults,
-    VLAConfig, ScriptsBatch,
+    EndpointConfig, ScriptsBatch, ConversationScript,
 )
 from ..simulator.utils import (
     extract_interaction_details,
@@ -32,31 +32,29 @@ class ConversationSimulator:
 
     def __init__(
         self,
-        firestore_service: BaseDatastore,
+        storage_service: BaseDatastore,
         evaluation_service: BaseEvaluator,
-        api_configuration: VLAConfig,
-        logger: logging.Logger,
+        endpoint_configuration: EndpointConfig,
     ):
         """
         Initialize the ConversationSimulator.
 
         Args:
-            firestore_service (FirestoreService): Service for saving simulation results.
+            storage_service (BaseDatastore): Service for saving simulation results.
             evaluation_service (EvaluationService): Service for evaluating interactions.
-            api_configuration (VLAConfig): Configuration object for VLA.
-            logger (logging.Logger): Logger instance.
+            endpoint_configuration (EndpointConfig): Configuration object for VLA.
         """
         self.evaluation_service = evaluation_service
-        self.firestore_service = firestore_service
+        self.storage_service = storage_service
         # TODO: Keep for now until we add a config method.
-        self.api_configuration = api_configuration
+        self.api_configuration = endpoint_configuration
         self.logger = logging.getLogger("?")
 
-        self._endpoint = api_configuration.full_url
-        self._credentials = api_configuration.api_key
-        self._headers = api_configuration.headers
+        self._endpoint = endpoint_configuration.full_url
+        self._credentials = endpoint_configuration.api_key
+        self._headers = endpoint_configuration.headers
 
-        self.test_batch = None
+        self.test_batch: ScriptsBatch | None = None
         self.evaluation_verdicts: Dict[str, List[str]] = defaultdict(list)
         self.verdict_summaries: Dict[str, List[str]] = defaultdict(list)
 
@@ -101,17 +99,14 @@ class ConversationSimulator:
         test_details.batch_details = batch_details
 
         try:
-            self.firestore_service.save_batch_test_results(
+            self.storage_service.save_batch_test_results(
                 user_id=batch_details.user_id,
                 project_id=batch_details.project_id,
                 batch_id=batch_details.batch_id,
                 data=test_details.model_dump(by_alias=True),
             )
 
-        except KeyError as e:
-            self.logger.error(
-                f"[run_batch_test] Missing required batch detail key: {e}"
-            )
+        # TODO: Create custom exceptions for 'DataStore' implementations.
         except HTTPException as e:
             self.logger.error(f"[run_batch_test] Failed to save batch result: {e}")
 
@@ -128,22 +123,21 @@ class ConversationSimulator:
             Dict[str, Any]: The results of the conversation simulation.
         """
         self.logger.info("[simulate_conversation] starting conversation simulation..")
-        self.test_batch = date_value_setter(self.test_batch)
-        semaphore = asyncio.Semaphore(value=len(self.test_batch.scenarios))
+        semaphore = asyncio.Semaphore(value=len(self.test_batch.scripts))
 
-        async def run_with_semaphore(scenario: SimulationScenario) -> Dict[str, Any]:
+        async def run_with_semaphore(script: ConversationScript) -> Dict[str, Any]:
             async with semaphore:
                 return await self.simulate_single_scenario(
-                    scenario=scenario, attempts=attempts
+                    script=script, attempts=attempts
                 )
 
         results = await asyncio.gather(
-            *(run_with_semaphore(s) for s in self.test_batch.scenarios)
+            *(run_with_semaphore(s) for s in self.test_batch.scripts)
         )
 
         aggregate_scores: Dict[str, List[float]] = defaultdict(list)
-        for scenarios_results in results:
-            for key, value in scenarios_results.get("averageScores", {}).items():
+        for result in results:
+            for key, value in result.get("averageScores", {}).items():
                 if isinstance(value, (int, float)):
                     aggregate_scores[key].append(value)
 
@@ -157,36 +151,35 @@ class ConversationSimulator:
         return {"scenarios": results, "averageScores": overall_average_scores}
 
     async def simulate_single_scenario(
-        self, scenario: SimulationScenario, attempts: int = 1
+        self, script: ConversationScript, attempts: int = 1
     ) -> Dict[str, Any]:
         """
         Simulate a single scenario with the given number of attempts, concurrently.
 
         Args:
-            scenario (SimulationScenario): The scenario to simulate.
+            script (SimulationScenario): The scenario to simulate.
             attempts (int): Number of attempts to run the simulation.
 
         Returns:
             Dict[str, Any]: The results of the scenario simulation.
         """
-        self.logger.info(
-            f"[simulate_single_scenario] starting simulation for scenario: {scenario.scenario_title}"
-        )
+        _FUNC_NAME: str = self.simulate_single_scenario.__name__
+
+        self.logger.info(f"[{_FUNC_NAME}] Starting simulation for script: {script.id}")
         all_attempts_scores: Dict[str, List[float]] = defaultdict(list)
         all_attempts_verdicts: Dict[str, List[str]] = defaultdict(list)
 
         async def simulate_attempt(attempt_number: int) -> Dict[str, Any]:
-            self.logger.info(
-                f"[simulate_single_scenario] Running attempt: {attempt_number + 1}/{attempts}"
-            )
+            self.logger.info(f"[{_FUNC_NAME}] Running attempt: {attempt_number + 1}/{attempts}")
             start_time = time.time()
 
             collected_scores: Dict[str, List[Any]] = defaultdict(list)
             collected_verdicts: Dict[str, List[str]] = defaultdict(list)
-            conversation_id = "batch-" + str(uuid.uuid4())
+            # TODO: Remove the 'conversation_id' from 'simulate_interactions' signature.
+            conversation_id = f"<CONV-ID:{str(uuid.uuid4())}>"
 
-            initial_interaction_results = await self.simulate_initial_interaction(
-                scenario=scenario,
+            initial_interaction_results = await self.simulate_interactions(
+                script=script,
                 conversation_id=conversation_id,
                 evaluation_verdicts=collected_verdicts,
                 collected_scores=collected_scores,
@@ -198,8 +191,8 @@ class ConversationSimulator:
             ):
                 inbound_interactions_results = None
             else:
-                inbound_interactions_results = await self.simulate_inbound_interactions(
-                    scenario=scenario,
+                inbound_interactions_results = await self.simulate_interactions(
+                    script=script,
                     conversation_id=conversation_id,
                     evaluation_verdicts=collected_verdicts,
                     collected_scores=collected_scores,
@@ -242,107 +235,15 @@ class ConversationSimulator:
         )
 
         return {
-            "scenarioId": scenario.scenario_title.replace(" ", "-"),
-            "scenarioName": scenario.scenario_title,
+            "scenarioId": script.scenario_title.replace(" ", "-"),
+            "scenarioName": script.scenario_title,
             "attempts": attempt_results,
             "averageScores": average_scores,
         }
 
-    async def simulate_initial_interaction(
+    async def simulate_interactions(
         self,
-        scenario: SimulationScenario,
-        conversation_id: str,
-        evaluation_verdicts: Dict[str, List[str]],
-        collected_scores: Dict[str, List[Any]],
-    ) -> Dict[str, Any]:
-        """
-        Simulate the initial interaction for a scenario.
-
-        Args:
-            scenario (SimulationScenario): The scenario to simulate.
-            conversation_id (str): The conversation ID.
-            evaluation_verdicts(Dict[str, List[str]]):
-            collected_scores(Dict[str, List[Any]]):
-
-        Returns:
-            Dict[str, Any]: The results of the initial interaction simulation.
-        """
-        self.logger.info(
-            "[simulate_initial_interaction] Starting initial interaction simulation.."
-        )
-        start_time = time.time()
-
-        initial_interaction = scenario.initial_interaction
-        initial_interaction.conversation_id = conversation_id
-        initial_interaction.interaction_details.timestamp = (
-            datetime.now().isoformat() + "Z"
-        )
-
-        response = await async_vla_request(
-            url=self._endpoint,
-            headers=self._headers,
-            payload=initial_interaction.model_dump(by_alias=True),
-        )
-
-        reference_vla_repy = scenario.expected_initial_reply
-        reference_metadata = scenario.expected_metadata.model_dump(by_alias=True)
-        reference_guardrail_flag: bool = (
-            scenario.initial_interaction.expected_handoff_pass
-        )
-
-        if not response or response.status_code != 200:
-            self.logger.error("[simulate_initial_interaction] VLA request failed.")
-            return {
-                "userMessage": initial_interaction.interaction_details.initial_message,
-                "vlaInitialReply": "VLA request failed",
-                "expectedVlaReply": reference_vla_repy,
-                "extractedMetadata": {},
-                "expectedMetadata": reference_metadata,
-                "handoffDetails": None,
-                "interactionType": "",
-                "evaluationResults": {},
-            }
-
-        interaction_details = extract_interaction_details(response_text=response.text)
-
-        extracted_vla_reply = interaction_details.vla_reply
-        extracted_metadata = interaction_details.extracted_metadata
-        extracted_guardrail_flag: bool = interaction_details.handoff_details is not None
-
-        evaluation_results = await self.evaluate_interaction(
-            extracted_vla_reply=extracted_vla_reply,
-            reference_vla_reply=reference_vla_repy,
-            extracted_metadata=extracted_metadata,
-            reference_metadata=reference_metadata,
-            extracted_guardrail=extracted_guardrail_flag,
-            reference_guardrail=reference_guardrail_flag,
-        )
-
-        self.store_evaluation_results(
-            results=evaluation_results,
-            evaluation_verdicts=evaluation_verdicts,
-            collected_scores=collected_scores,
-        )
-
-        elapsed_time = time.time() - start_time
-        self.logger.info(
-            f"[simulate_initial_interaction] Simulation complete in {elapsed_time:.2f} seconds\n---"
-        )
-
-        return {
-            "userMessage": initial_interaction.interaction_details.initial_message,
-            "vlaInitialReply": extracted_vla_reply,
-            "expectedVlaReply": reference_vla_repy,
-            "extractedMetadata": extracted_metadata,
-            "expectedMetadata": reference_metadata,
-            "handoffDetails": interaction_details.handoff_details,
-            "interactionType": interaction_details.interaction_type,
-            "evaluationResults": evaluation_results.model_dump(),
-        }
-
-    async def simulate_inbound_interactions(
-        self,
-        scenario: SimulationScenario,
+        script: ConversationScript,
         conversation_id: str,
         evaluation_verdicts: Dict[str, List[str]],
         collected_scores: Dict[str, List[Any]],
@@ -351,7 +252,7 @@ class ConversationSimulator:
         Simulate inbound interactions for a scenario.
 
         Args:
-            scenario (SimulationScenario): The scenario to simulate.
+            script (ConversationScript): The script to simulate.
             conversation_id (str): The conversation ID.
             evaluation_verdicts(Dict[str, List[str]]): evaluation verdict for each evaluator.
             collected_scores(Dict[str, List[Any]]): collected scores for each target.
@@ -359,51 +260,56 @@ class ConversationSimulator:
         Returns:
             List[Dict[str, Any]]: The results of the inbound interactions simulation.
         """
-        self.logger.info(
-            "[simulate_inbound_interactions] Starting inbound interactions simulation.."
-        )
+        _FUNC_NAME: str = self.simulate_interactions.__name__
+
+        self.logger.info(f"[{_FUNC_NAME}] Starting interactions simulation..")
         start_time = time.time()
 
         results = []
-        inbound_interactions_sequence = scenario.inbound_interactions
+        interactions = script.interactions
 
-        for interaction in inbound_interactions_sequence:
+        for interaction in interactions:
             interaction.conversation_id = conversation_id
-            user_message = interaction.inbound_interaction_payload.message_content
+            user_message = interaction.user_message
+
+            # TODO: Add payload prep here.
 
             response = await async_vla_request(
                 url=self._endpoint,
                 headers=self._headers,
+                # TODO: Adjust the payload dump that needs to be passed for the request.
                 payload=interaction.model_dump(by_alias=True),
             )
 
-            reference_vla_repy = interaction.expected_vla_reply
-            reference_metadata = interaction.expected_metadata.model_dump(by_alias=True)
-            reference_guardrail_flag: bool = interaction.expected_handoff_pass
+            reference_reply = interaction.reference_reply
+            reference_metadata = interaction.reference_metadata
+            reference_guardrail_flag: bool = interaction.guardrail_flag
 
             if not response or response.status_code != 200:
                 self.logger.error("[simulate_inbound_interaction] VLA request failed.")
                 result = {
-                    "userMessage": user_message,
-                    "vlaReply": "VLA Request failed",
-                    "expectedVlaReply": reference_vla_repy,
-                    "extractedMetadata": {},
-                    "expectedMetadata": reference_metadata,
-                    "handoffDetails": None,
-                    "interactionType": "",
-                    "evaluationResults": {},
+                    "user_message": user_message,
+                    "generated_reply": "VLA Request failed",
+                    "reference_reply": reference_reply,
+                    "generated_metadata": {},
+                    "reference_metadata": reference_metadata,
+                    "guardrail_details": None,
+                    "interaction_type": "",
+                    "evaluation_results": {},
                 }
                 results.append(result)
                 continue
 
+            # TODO: Use the loader to build a pydantic model instance of the agent response.
+            # TODO: Extract directly the response text from the model.
             interaction_details = extract_interaction_details(
                 response_text=response.text
             )
 
-            extracted_vla_reply = interaction_details.vla_reply
-            extracted_metadata = interaction_details.extracted_metadata
+            extracted_vla_reply = interaction_details.generated_reply
+            extracted_metadata = interaction_details.generated_metadata
             extracted_guardrail_flag: bool = (
-                interaction_details.handoff_details is not None
+                    interaction_details.guardrail_details is not None
             )
 
             if interaction_details.interaction_type in ("handoff", "newBooking"):
@@ -414,7 +320,7 @@ class ConversationSimulator:
 
             evaluation_results = await self.evaluate_interaction(
                 extracted_vla_reply=extracted_vla_reply,
-                reference_vla_reply=reference_vla_repy,
+                reference_vla_reply=reference_reply,
                 extracted_metadata=extracted_metadata,
                 reference_metadata=reference_metadata,
                 extracted_guardrail=extracted_guardrail_flag,
@@ -435,10 +341,10 @@ class ConversationSimulator:
             result = {
                 "userMessage": user_message,
                 "vlaReply": extracted_vla_reply,
-                "expectedVlaReply": reference_vla_repy,
+                "expectedVlaReply": reference_reply,
                 "extractedMetadata": extracted_metadata,
                 "expectedMetadata": reference_metadata,
-                "handoffDetails": interaction_details.handoff_details,
+                "handoffDetails": interaction_details.guardrail_details,
                 "evaluationResults": evaluation_results.model_dump(),
             }
 

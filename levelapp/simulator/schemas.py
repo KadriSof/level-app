@@ -40,11 +40,12 @@ class Interaction(BaseModel):
     """Represents a single interaction within a conversation."""
     id: UUID = Field(default_factory=uuid4, description="Interaction identifier")
     user_message: str = Field(..., description="The user's query message")
-    agent_reply: str = Field(..., description="The agent's reply message")
+    generated_reply: str = Field(..., description="The agent's reply message")
     reference_reply: str = Field(..., description="The preset reference message")
     interaction_type: InteractionLevel = Field(..., description="Type of interaction")
     reference_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Expected metadata")
     generated_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Extracted metadata")
+    guardrail_flag: bool = Field(default=False, description="Flag for guardrail signaling")
 
 
 class ConversationScript(BaseModel):
@@ -61,9 +62,10 @@ class ScriptsBatch(BaseModel):
 
 
 # ---- VLA Configuration & Interaction Details Models ----
-class VLAConfig(BaseModel):
-    endpoint: HttpUrl
+class EndpointConfig(BaseModel):
+    url: HttpUrl
     api_key: SecretStr
+    payload_template: Dict[str, Any]
 
     @property
     def headers(self) -> Dict[str, Any]:
@@ -74,16 +76,16 @@ class VLAConfig(BaseModel):
 
     @property
     def full_url(self) -> str:
-        return f"{self.endpoint}/api/conversations/events"
+        return f"{self.url}/api/conversations/events"
 
 
-class VLAInteractionDetails(BaseModel):
+class InteractionResults(BaseModel):
     """Represents metadata extracted from a VLA interaction."""
-    vla_reply: Optional[str] = "No response"
-    extracted_metadata: Optional[Dict[str, Any]] = {}
-    handoff_details: Optional[Dict[str, Any]] = {}
+    generated_reply: Optional[str] = "No response"
+    generated_metadata: Optional[Dict[str, Any]] = {}
+    guardrail_details: Optional[Dict[str, Any]] = {}
+    # TODO: Remove 'interaction_type'?
     interaction_type: Optional[str] = ""
-
 
 # ---- Evaluation Result Model ----
 class InteractionEvaluationResult(BaseModel):
@@ -115,6 +117,7 @@ class BatchDetails(BaseModel):
     # Collected data
     started_at: Optional[str] = Field(None, alias="startedAt")
     finished_at: Optional[str] = Field(None, alias="finishedAt")
+    # TODO: 'elapsed_time' can be changed to a calculated field.
     elapsed_time: Optional[float] = Field(None, alias="totalDurationSeconds")
     evaluation_summary: Optional[Dict[str, Any]] = Field(None, alias="globalJustification")
     average_scores: Optional[Dict[str, Any]] = Field(None, alias="averageScores")
