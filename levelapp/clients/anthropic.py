@@ -1,31 +1,32 @@
-"""levelapp/clients/openai.py"""
+"""levelapp\clients\anthropic.py"""
 import os
-from typing import Dict, Any
 
 import requests
 import json
 from ..core.base import BaseChatClient
 
 
-class OpenAIClient(BaseChatClient):
+class ClaudeClient(BaseChatClient):
     def __init__(self, **kwargs):
-        self.model = "gpt-4.1"
-        self.max_tokens = "1024"
-        self.base_url = kwargs.get('base_url') or "https://api.openai.com/v1"
-        self.api_key = kwargs.get('api_key') or os.environ.get('OPENAI_API_KEY')
+        self.model = "claude-opus-4-20250514"
+        self.version = "2023-06-01"
+        self.max_tokens = 1024
+        self.base_url = "https://api.anthropic.com/v1"
+        self.api_key = kwargs.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
         if not self.api_key:
-            raise ValueError("OpenAI API key not set")
+            raise ValueError("Anthropic API key not set.")
 
-    def call(self, message: str, **kwargs) -> Dict[str, Any]:
-        url = f"{self.base_url}/responses"
+    def call(self, message: str, **kwargs):
+        url = f"{self.base_url}/completions"
         headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "x-api-key": self.api_key,
+            "anthropic-version": kwargs.get('version') or self.version,
+            "content-type": "application/json"
         }
         data = {
             "model": kwargs.get('model') or self.model,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": message}]}],
-            "max_tokens": kwargs.get('max_tokens') or self.max_tokens,
+            "messages": [{"role": "user", "content": message}],
+            "max_tokens": kwargs.get('max_tokens') or self.max_tokens
         }
 
         try:
