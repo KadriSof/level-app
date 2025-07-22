@@ -1,8 +1,9 @@
 """levelapp\clients\anthropic.py"""
 import os
-
 import requests
 import json
+
+from typing import Dict, Any
 from ..core.base import BaseChatClient
 
 
@@ -16,7 +17,7 @@ class ClaudeClient(BaseChatClient):
         if not self.api_key:
             raise ValueError("Anthropic API key not set.")
 
-    def call(self, message: str, **kwargs):
+    def call(self, message: str, **kwargs) -> Dict[str, Any]:
         url = f"{self.base_url}/completions"
         headers = {
             "x-api-key": self.api_key,

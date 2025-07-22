@@ -1,9 +1,9 @@
 """levelapp/clients/openai.py"""
 import os
-from typing import Dict, Any
-
 import requests
 import json
+
+from typing import Dict, Any
 from ..core.base import BaseChatClient
 
 
