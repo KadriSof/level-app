@@ -1,11 +1,23 @@
 """levelapp/core/evaluator.py"""
+import logging
 
-from typing import Dict
+from typing import Dict, Any
 
-from levelapp.clients import AnthropicClient, MistralClient
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    AsyncRetrying,
+    RetryError,
+)
+
 from levelapp.core.base import BaseEvaluator, BaseChatClient
 
-prompt = """
+
+logger = logging.getLogger(__name__)
+
+EVAL_PROMPT_TEMPLATE = """
 Your task is to evaluate how well the agent's generated text matches the expected text.
 Use the following classification criteria:
 
@@ -39,49 +51,53 @@ class InteractionEvaluator(BaseEvaluator):
         self.clients[provider] = client
 
     @staticmethod
-    def build_prompt(generated_text: str, reference_text: str) -> str:
-        return prompt.format(generated_text=generated_text, reference_text=reference_text)
+    def _build_prompt(generated_text: str, reference_text: str) -> str:
+        return EVAL_PROMPT_TEMPLATE.format(generated_text=generated_text, reference_text=reference_text)
 
-    def evaluate(self, provider: str, generated_text: str, reference_text: str):
-        if provider not in self.clients:
-            raise ValueError(f"[InteractionEvaluator] The client {provider} is not registered.")
+    def _get_client(self, provider: str) -> BaseChatClient:
+        try:
+            return self.clients[provider]
+        except KeyError:
+            raise ValueError(f"[InteractionEvaluator] Client for provider '{provider}' is not registered.")
 
-        prompt = self.build_prompt(generated_text=generated_text, reference_text=reference_text)
-        client = self.clients[provider]
-        response = client.call(message=prompt)
+    @retry(
+        retry=retry_if_exception_type((TimeoutError, ValueError, RuntimeError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
+    )
+    def evaluate(self, provider: str, generated_text: str, reference_text: str) -> Dict[str, Any]:
+        prompt = self._build_prompt(generated_text, reference_text)
+        client = self._get_client(provider)
 
-        print(f"[InteractionEvaluator] Evaluation result: {response}")
+        try:
+            response = client.call(message=prompt)
+            logger.info(f"[{provider}] Evaluation: {response}")
+            return response
 
-    async def async_evaluate(self, provider: str, generated_text: str, reference_text: str):
-        if provider not in self.clients:
-            raise ValueError(f"[InteractionEvaluator] The client {provider} is not registered.")
+        except Exception as e:
+            logger.error(f"[{provider}] Evaluation failed: {e}", exc_info=True)
+            return {"match_level": -1, "justification": f"Exception during evaluation: {str(e)}"}
 
-        prompt = self.build_prompt(generated_text=generated_text, reference_text=reference_text)
-        client = self.clients[provider]
-        response = await client.acall(message=prompt)
+    async def async_evaluate(self, provider: str, generated_text: str, reference_text: str) -> Dict[str, Any]:
+        prompt = self._build_prompt(generated_text, reference_text)
+        client = self._get_client(provider)
 
-        print(f"[InteractionEvaluator] Evaluation result: {response}")
+        try:
+            async for attempt in AsyncRetrying(
+                retry=retry_if_exception_type((TimeoutError, ValueError, RuntimeError)),
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+                reraise=True,
+            ):
+                with attempt:
+                    response = await client.acall(message=prompt)
+                    logger.info(f"[{provider}] Async evaluation: {response}")
+                    return response
 
-
-if __name__ == '__main__':
-    from dotenv import load_dotenv
-
-    from levelapp.clients.ionos import IonosClient
-    from levelapp.clients.openai import OpenAIClient
-
-    load_dotenv()
-
-    evaluator = InteractionEvaluator()
-    ionos_client = IonosClient(base_url="https://inference.de-txl.ionos.com/models")
-    openai_client = OpenAIClient()
-    anthropic_client = AnthropicClient()
-    mistral_client = MistralClient()
-
-    evaluator.register_client("ionos", openai_client)
-    evaluator.register_client("openai", openai_client)
-    evaluator.register_client("anthropic", anthropic_client)
-    evaluator.register_client("mistral", mistral_client)
-
-    reference = "dubito, ergo sum, vel, quod idem est, cogito, ergo sum"
-    generated = "cogito, ergo sum"
-    evaluator.evaluate("mistral", generated, reference)
+        except RetryError as e:
+            logger.error(f"[{provider}] Async evaluation failed after retries: {e}", exc_info=True)
+            return {
+                "match_level": -1,
+                "justification": f"Async evaluation failed after retries: {str(e)}"
+            }
