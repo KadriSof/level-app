@@ -24,7 +24,7 @@ class BaseComparator(ABC):
 class BaseEvaluator(ABC):
     """Abstract base class for evaluator components."""
     @abstractmethod
-    def evaluate(self):
+    def evaluate(self, provider: str, generated_text: str, reference_text: str):
         """Evaluate system output to reference output."""
         raise NotImplementedError
 
@@ -32,13 +32,26 @@ class BaseEvaluator(ABC):
 class BaseChatClient(ABC):
     """Abstract base chat client for different LLM providers integration."""
     @abstractmethod
-    def call(self, message: str, model: str, **kwargs) -> Dict[str, Any]:
+    def call(self, message: str, **kwargs) -> Dict[str, Any]:
         """
         Send a message to the LLM provider and return the response.
 
         Args:
             message: The message to send to the LLM.
-            model: The model identifier to use for generating the response.
+            **kwargs: Additional provider-specific arguments.
+
+        Returns:
+            A dictionary containing the response from the LLM provider.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def acall(self, message: str, **kwargs) -> Dict[str, Any]:
+        """
+        Send a message to the LLM provider and return the response (asynchronous).
+
+        Args:
+            message: The message to send to the LLM.
             **kwargs: Additional provider-specific arguments.
 
         Returns:

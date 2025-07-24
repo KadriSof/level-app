@@ -18,7 +18,7 @@ class IonosClient(BaseChatClient):
             raise ValueError("IONOS API key not set.")
 
     def call(self, message: str, **kwargs) -> Dict[str, Any]:
-        url = f"{self.base_url}/completions"
+        url = f"{self.base_url}/predictions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -52,8 +52,7 @@ class IonosClient(BaseChatClient):
             print(f"An unexpected error occurred: {req_err}")
             raise
 
-
-    async def call(self, message: str, **kwargs) -> Dict[str, Any]:
+    async def acall(self, message: str, **kwargs) -> Dict[str, Any]:
         url = f"{self.base_url}/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -62,8 +61,10 @@ class IonosClient(BaseChatClient):
         payload = {
             "properties": {"input": message},
             "option": {
-                **self.default_options,
-                **kwargs,
+                "top-k": 5,
+                "top-p": 0.9,
+                "temperature": 0.0,
+                "max_tokens": 150,
                 "seed": uuid.uuid4().int & ((1 << 16) - 1),
             }
         }
@@ -73,3 +74,6 @@ class IonosClient(BaseChatClient):
             response.raise_for_status()
 
             return response.json()
+
+    async def acall(self, message: str, **kwargs) -> Dict[str, Any]:
+        pass

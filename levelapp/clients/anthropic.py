@@ -7,9 +7,9 @@ from typing import Dict, Any
 from ..core.base import BaseChatClient
 
 
-class ClaudeClient(BaseChatClient):
+class AnthropicClient(BaseChatClient):
     def __init__(self, **kwargs):
-        self.model = "claude-opus-4-20250514"
+        self.model = "claude-sonnet-4-20250514"
         self.version = "2023-06-01"
         self.max_tokens = 1024
         self.base_url = "https://api.anthropic.com/v1"
@@ -18,7 +18,7 @@ class ClaudeClient(BaseChatClient):
             raise ValueError("Anthropic API key not set.")
 
     def call(self, message: str, **kwargs) -> Dict[str, Any]:
-        url = f"{self.base_url}/completions"
+        url = f"{self.base_url}/messages"
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": kwargs.get('version') or self.version,
@@ -47,3 +47,6 @@ class ClaudeClient(BaseChatClient):
         except requests.exceptions.RequestException as req_err:
             print(f"An unexpected error occurred: {req_err}")
             raise
+
+    async def acall(self, message: str, **kwargs) -> Dict[str, Any]:
+        pass

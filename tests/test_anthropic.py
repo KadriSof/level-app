@@ -2,7 +2,7 @@ import unittest
 import requests
 
 from unittest.mock import patch, MagicMock
-from levelapp.clients.anthropic import ClaudeClient
+from levelapp.clients.anthropic import AnthropicClient
 
 
 class TestClaudeClient(unittest.TestCase):
@@ -15,7 +15,7 @@ class TestClaudeClient(unittest.TestCase):
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
 
-        client = ClaudeClient(api_key="fake_api_key")
+        client = AnthropicClient(api_key="fake_api_key")
 
         # Exercise
         response = client.call("Hello, world!")
@@ -29,7 +29,7 @@ class TestClaudeClient(unittest.TestCase):
         # Setup
         mock_post.side_effect = requests.exceptions.HTTPError("HTTP Error")
 
-        client = ClaudeClient(api_key="fake_api_key")
+        client = AnthropicClient(api_key="fake_api_key")
 
         # Exercise and Verify
         with self.assertRaises(requests.exceptions.HTTPError):
@@ -40,7 +40,7 @@ class TestClaudeClient(unittest.TestCase):
         # Setup
         mock_post.side_effect = requests.exceptions.ConnectionError("Connection Error")
 
-        client = ClaudeClient(api_key="fake_api_key")
+        client = AnthropicClient(api_key="fake_api_key")
 
         # Exercise and Verify
         with self.assertRaises(requests.exceptions.ConnectionError):
@@ -49,7 +49,7 @@ class TestClaudeClient(unittest.TestCase):
     def test_init_missing_api_key(self):
         # Setup and Exercise
         with self.assertRaises(ValueError):
-            ClaudeClient()
+            AnthropicClient()
 
 
 if __name__ == '__main__':

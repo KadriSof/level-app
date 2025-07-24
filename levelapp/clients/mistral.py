@@ -16,7 +16,7 @@ class MistralClient(BaseChatClient):
             raise ValueError("Missing API key not set.")
 
     def call(self, message: str, **kwargs) -> Dict[str, Any]:
-        url = f"f{self.base_url}/chat/completions"
+        url = f"{self.base_url}/chat/completions"
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
@@ -24,7 +24,7 @@ class MistralClient(BaseChatClient):
         }
         data = {
             "model": kwargs.get("model") or self.model,
-            "message": [{"role": "user", "content": message}],
+            "messages": [{"role": "user", "content": message}],
         }
 
         try:
@@ -44,3 +44,6 @@ class MistralClient(BaseChatClient):
         except requests.exceptions.RequestException as req_err:
             print(f"An unexpected error occurred: {req_err}")
             raise
+
+    async def acall(self, message: str, **kwargs) -> Dict[str, Any]:
+        pass

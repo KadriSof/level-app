@@ -9,22 +9,22 @@ from ..core.base import BaseChatClient
 
 class OpenAIClient(BaseChatClient):
     def __init__(self, **kwargs):
-        self.model = "gpt-4.1"
-        self.max_tokens = "1024"
+        self.model = "gpt-4o-mini"
+        self.max_tokens = 1024
         self.base_url = kwargs.get('base_url') or "https://api.openai.com/v1"
         self.api_key = kwargs.get('api_key') or os.environ.get('OPENAI_API_KEY')
         if not self.api_key:
             raise ValueError("OpenAI API key not set")
 
     def call(self, message: str, **kwargs) -> Dict[str, Any]:
-        url = f"{self.base_url}/responses"
+        url = f"{self.base_url}/chat/completions"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
         }
         data = {
             "model": kwargs.get('model') or self.model,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": message}]}],
+            "messages": [{"role": "user", "content": message}],
             "max_tokens": kwargs.get('max_tokens') or self.max_tokens,
         }
 
@@ -45,3 +45,6 @@ class OpenAIClient(BaseChatClient):
         except requests.exceptions.RequestException as req_err:
             print(f"An unexpected error occurred: {req_err}")
             raise
+
+    async def acall(self, message: str, **kwargs) -> Dict[str, Any]:
+        pass
