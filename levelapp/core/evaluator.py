@@ -17,6 +17,7 @@ from levelapp.core.base import BaseEvaluator, BaseChatClient
 
 logger = logging.getLogger(__name__)
 
+# TODO-0: Move this to a separate file.
 EVAL_PROMPT_TEMPLATE = """
 Your task is to evaluate how well the agent's generated text matches the expected text.
 Use the following classification criteria:
@@ -42,7 +43,7 @@ Return your evaluation as a valid JSON object with exactly these keys:
 Output only the JSON object and nothing else.
 """
 
-
+# TODO-1: Automate the clients registration process using a decorator or a registry pattern.
 class InteractionEvaluator(BaseEvaluator):
     def __init__(self):
         self.clients: Dict[str, BaseChatClient] = {}
