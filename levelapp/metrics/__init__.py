@@ -1,9 +1,10 @@
 """levelapp/metrics/__init__.py"""
 import logging
 
-from typing import Dict, Type
+from typing import List, Dict, Type
 
 from levelapp.core.base import BaseMetric
+from levelapp.metrics.exact import EXACT_METRICS
 from levelapp.metrics.fuzzy import FUZZY_METRICS
 
 logger = logging.getLogger(__name__)
@@ -49,11 +50,20 @@ class MetricRegistry:
 
         return cls._metrics[name](**kwargs)
 
+    @classmethod
+    def list_metrics(cls) -> List[str]:
+        return list(cls._metrics.keys())
 
-for name, metric_class in FUZZY_METRICS.items():
+    @classmethod
+    def unregister(cls, name: str) -> None:
+        cls._metrics.pop(name, None)
+
+
+METRICS = FUZZY_METRICS | EXACT_METRICS
+
+for name, metric_class in METRICS.items():
     try:
         MetricRegistry.register(name, metric_class)
-        logger.info(f"Successfully registered metric: {name}")
 
     except Exception as e:
         logger.info(f"Failed to register metric {name}: {e}")
