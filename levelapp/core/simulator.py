@@ -14,14 +14,11 @@ from typing import Dict, Any, List
 from .base import BaseDatastore, BaseEvaluator
 from ..simulator.schemas import (
     InteractionEvaluationResult,
-    BatchDetails,
-    TestResults,
-    EndpointConfig, ScriptsBatch, ConversationScript,
+    EndpointConfig, ScriptsBatch, ConversationScript, BatchDetails, TestResults,
 )
 from ..simulator.utils import (
     extract_interaction_details,
     async_vla_request,
-    date_value_setter,
     calculate_average_scores,
     summarize_verdicts,
 )
@@ -81,17 +78,14 @@ class ConversationSimulator:
             f"[run_batch_test] Starting batch test for batch: {test_details.test_name}"
         )
         started_at = datetime.now().isoformat()
-        start_time = time.time()
 
         self.test_batch = test_batch
         results = await self.simulate_conversation(attempts=attempts)
 
         finished_at = datetime.now().isoformat()
-        elapsed_time = time.time() - start_time
 
         batch_details.started_at = started_at
         batch_details.finished_at = finished_at
-        batch_details.elapsed_time = elapsed_time
         batch_details.evaluation_summary = self.verdict_summaries
         batch_details.average_scores = results["averageScores"]
         batch_details.simulation_results = results["scenarios"]
@@ -122,7 +116,9 @@ class ConversationSimulator:
         Returns:
             Dict[str, Any]: The results of the conversation simulation.
         """
-        self.logger.info("[simulate_conversation] starting conversation simulation..")
+        _FUNC_NAME: str = self.simulate_single_scenario.__name__
+
+        self.logger.info(f"[{_FUNC_NAME}] starting conversation simulation..")
         semaphore = asyncio.Semaphore(value=len(self.test_batch.scripts))
 
         async def run_with_semaphore(script: ConversationScript) -> Dict[str, Any]:
@@ -185,19 +181,6 @@ class ConversationSimulator:
                 collected_scores=collected_scores,
             )
 
-            if initial_interaction_results["interactionType"] in (
-                "handoff",
-                "newBooking",
-            ):
-                inbound_interactions_results = None
-            else:
-                inbound_interactions_results = await self.simulate_interactions(
-                    script=script,
-                    conversation_id=conversation_id,
-                    evaluation_verdicts=collected_verdicts,
-                    collected_scores=collected_scores,
-                )
-
             single_attempt_scores = calculate_average_scores(collected_scores)
 
             for target, scores in single_attempt_scores.items():
@@ -207,31 +190,31 @@ class ConversationSimulator:
                 all_attempts_verdicts[judge].extend(verdicts)
 
             elapsed_time = time.time() - start_time
-            all_attempts_scores["processingTime"].append(elapsed_time)
+            all_attempts_scores["processing_time"].append(elapsed_time)
 
             self.logger.info(
                 f"[simulate_single_scenario] Attempt {attempt_number + 1} completed in {elapsed_time:.2f}s\n---"
             )
 
             return {
-                "attemptId": attempt_number + 1,
-                "conversationId": conversation_id,
-                "totalDurationSeconds": elapsed_time,
-                "initialInteraction": initial_interaction_results,
-                "inboundInteractions": inbound_interactions_results,
-                "globalJustification": collected_verdicts,
-                "averageScores": single_attempt_scores,
+                "attempt": attempt_number + 1,
+                "conversation_id": conversation_id,
+                "total_duration": elapsed_time,
+                "interaction_results": initial_interaction_results,
+                "evaluation_verdicts": collected_verdicts,
+                "average_scores": single_attempt_scores,
             }
 
         attempt_tasks = [simulate_attempt(i) for i in range(attempts)]
         attempt_results = await asyncio.gather(*attempt_tasks, return_exceptions=False)
 
         average_scores = calculate_average_scores(all_attempts_scores)
+
         for judge_, verdicts_ in all_attempts_verdicts.items():
             self.evaluation_verdicts[judge_].extend(verdicts_)
 
         self.logger.info(
-            f"[simulate_single_conversation] average scores:\n{average_scores}\n---"
+            f"[{_FUNC_NAME}] average scores:\n{average_scores}\n---"
         )
 
         return {

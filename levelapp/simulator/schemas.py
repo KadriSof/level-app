@@ -8,9 +8,7 @@ from enum import Enum
 from uuid import UUID, uuid4
 
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, HttpUrl, SecretStr, Field
-
-from evaluators.schemas import EvaluationResult
+from pydantic import BaseModel, HttpUrl, SecretStr, Field, computed_field
 
 
 class InteractionLevel(str, Enum):
@@ -29,13 +27,6 @@ class InteractionDetails(BaseModel):
     interaction_type: Optional[InteractionLevel] = InteractionLevel.INITIAL
 
 
-class InteractionEvaluationResult(BaseModel):
-    """Model representing the evaluation result of an interaction."""
-    evaluations: Dict[str, Any]
-    extracted_metadata_evaluation: float
-    scenario_id: str
-
-
 class Interaction(BaseModel):
     """Represents a single interaction within a conversation."""
     id: UUID = Field(default_factory=uuid4, description="Interaction identifier")
@@ -51,7 +42,7 @@ class Interaction(BaseModel):
 class ConversationScript(BaseModel):
     """Represents a basic conversation with multiple interactions."""
     id: UUID = Field(default_factory=uuid4, description="Conversation identifier")
-    interactions: List[Interaction] = Field(default_factory=list, description="List of interactions in the conversation")
+    interactions: List[Interaction] = Field(default_factory=list, description="List of interactions")
     description: str = Field(..., description="A short description of the conversation")
     details: Dict[str, str] = Field(default_factory=dict, description="Conversation details")
 
@@ -61,7 +52,7 @@ class ScriptsBatch(BaseModel):
     scripts: List[ConversationScript] = Field(default_factory=list, description="List of conversation scripts")
 
 
-# ---- VLA Configuration & Interaction Details Models ----
+# ---- Conversation Agent Configuration & Interaction Details Models ----
 class EndpointConfig(BaseModel):
     url: HttpUrl
     api_key: SecretStr
@@ -87,45 +78,30 @@ class InteractionResults(BaseModel):
     # TODO: Remove 'interaction_type'?
     interaction_type: Optional[str] = ""
 
-# ---- Evaluation Result Model ----
+
 class InteractionEvaluationResult(BaseModel):
-    """Evaluation results for a single interaction."""
-    openaiReplyEvaluation: EvaluationResult
-    ionosReplyEvaluation: EvaluationResult
-    extractedMetadataEvaluation: float
-    guardrailFlag: Optional[int]
-
-
-# ---- Scenario & Test Batch Models ----
-class PresetDetails(BaseModel):
-    preset_id: str = Field(..., alias="presetId")
-    preset_name: str = Field(..., alias="presetName")
-    description: Optional[str] = None
-
-    class Config:
-        validate_by_name = True
-        populate_by_name = True
+    """Model representing the evaluation result of an interaction."""
+    evaluations: Dict[str, Any]
+    extracted_metadata_evaluation: float
+    scenario_id: str
 
 
 class BatchDetails(BaseModel):
     # Initial data
-    project_id: str = Field(..., alias="projectId")
-    user_id: str = Field(..., alias="userId")
-    batch_id: str = Field(..., alias="batchId")
-    name: str = Field(..., alias="name")
-    preset_details: PresetDetails = Field(..., alias="scenarioPreset")
+    project_id: str = Field(default_factory=uuid4, description="Project identifier")
+    user_id: str = Field(default_factory=uuid4, description="User identifier")
+    batch_id: str = Field(default_factory=uuid4, description="Batch identifier")
     # Collected data
-    started_at: Optional[str] = Field(None, alias="startedAt")
-    finished_at: Optional[str] = Field(None, alias="finishedAt")
-    # TODO: 'elapsed_time' can be changed to a calculated field.
-    elapsed_time: Optional[float] = Field(None, alias="totalDurationSeconds")
-    evaluation_summary: Optional[Dict[str, Any]] = Field(None, alias="globalJustification")
-    average_scores: Optional[Dict[str, Any]] = Field(None, alias="averageScores")
-    simulation_results: Optional[List[Dict[str, Any]]] = Field(None, alias="scenarios")
+    started_at: Optional[float]
+    finished_at: Optional[float]
+    evaluation_summary: Optional[Dict[str, Any]]
+    average_scores: Optional[Dict[str, Any]]
+    simulation_results: Optional[List[Dict[str, Any]]]
 
-    class Config:
-        validate_by_name = True
-        populate_by_name = True
+    @computed_field
+    @property
+    def elapsed_time(self) -> float:
+        return self.finished_at - self.started_at
 
 
 class TestResults(BaseModel):
@@ -134,7 +110,3 @@ class TestResults(BaseModel):
     test_name: str = Field(..., alias="testName")
     test_type: str = Field(..., alias="testType")
     batch_details: Optional[BatchDetails] = Field(..., alias="results")
-
-    class Config:
-        validate_by_name = True
-        populate_by_name = True
