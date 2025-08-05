@@ -1,180 +1,223 @@
 """levelapp/core/session.py"""
-import threading
-import uuid
-import weakref
+import logging
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from contextlib import contextmanager
-
-from enum import Enum
-from dataclasses import dataclass, field
-from collections import defaultdict, deque
-from typing import Dict, Set, List, Any, Deque, Generator
+from typing import Dict, Any
 
 from levelapp.utils.monitoring import FunctionMonitor, ExecutionMetrics
 
 
-class EvaluationPhase(Enum):
-    """Different phases of the evaluation process."""
-    SETUP = "setup"
-    DATA_LOADING = "data_loading"
-    INFERENCE = "inference"
-    SCORING = "scoring"
-    AGGREGATION = "aggregation"
-    CLEANUP = "cleanup"
+logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ExecutionContext:
-    """Context information for the evaluation execution."""
-    session_id: str
-    evaluation_id: str | None = None
-    phase: EvaluationPhase | None = None
-    batch_id: str | None = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    parent_context: 'ExecutionContext' | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now)
+class EvaluationSession:
+    """Context manager for LLM evaluation sessions with integrated monitoring and stats retrieval."""
 
-    def child_context(self, **kwargs) -> 'ExecutionContext':
-        """
-        Create a child context inheriting from the current context.
+    def __init__(self, session_name: str, monitor: FunctionMonitor, enable_monitoring: bool = True):
+        self.session_name = session_name
+        self.monitor = monitor if enable_monitoring else None
+        self.session_metadata = {
+            "session_name": session_name,
+            "start_time": None,
+            "end_time": None,
+            "steps": []
+        }
 
-        Args:
-            **kwargs: Additional attributes to set for the child context.
+    def __enter__(self):
+        """Start the evaluation session with monitoring."""
+        self.session_metadata["start_time"] = datetime.now()
 
-        Returns:
-            ExecutionContext: A new child context with inherited properties.
-        """
-        return ExecutionContext(
-            session_id=self.session_id,
-            evaluation_id=self.evaluation_id or kwargs.get('evaluation_id'),
-            phase=self.phase or kwargs.get('phase'),
-            batch_id=self.batch_id or kwargs.get('batch_id'),
-            metadata={**self.metadata, **kwargs.get('metadata', {})},
-            parent_context=self
-        )
+        if self.monitor:
+            logger.info(f"🚀 Starting evaluation session: {self.session_name}")
 
-@dataclass
-class SessionMetrics:
-    """Metrics for an evaluation session."""
-    session_id: str
-    started_at: datetime
-    ended_at: datetime | None = None
-    total_executions: int = 0
-    total_duration: float = 0.0
-    total_errors: int = 0
-    phases_executed: Set[str] = field(default_factory=set)
-    evaluations: Set[str] = field(default_factory=set)
-    functions_called: Set[str] = field(default_factory=set)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+        return self
 
-    @property
-    def is_active(self) -> bool:
-        """Check if the session is still active."""
-        return self.ended_at is None
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Finalize the session and log metrics."""
+        self.session_metadata["end_time"] = datetime.now()
 
-    @property
-    def duration(self) -> float | None:
-        """Calculate the total duration of the session."""
-        if not self.ended_at:
-            return None
-        return (self.ended_at - self.started_at).total_seconds()
+        if self.monitor:
+            session_duration = (self.session_metadata["end_time"] - self.session_metadata["start_time"]).total_seconds()
+            logger.info(f"✅ Completed session '{self.session_name}' in {session_duration:.2f}s")
 
-    @property
-    def success_rate(self) -> float:
-        """Calculate the success rate of the session."""
-        if self.total_executions == 0:
-            return 100.0
-        return ((self.total_executions - self.total_errors) / self.total_executions) * 100.0
+            if exc_type:
+                logger.error(f"Session ended with error: {exc_val}", exc_info=True)
 
-
-class EvaluationSessionManager:
-    """Manager for handling evaluation sessions and their metrics."""
-
-    def __init__(self, monitor: FunctionMonitor):
-        self._monitor = monitor or FunctionMonitor()
-        self._context_stack: threading.local = threading.local()
-        self._sessions: Dict[str, SessionMetrics] = {}
-        self._session_contexts: Dict[str, List[ExecutionContext]] = defaultdict(list)
-        self._execution_timeline = Dict[str, Deque[ExecutionMetrics]] = defaultdict(lambda: deque(maxlen=1000))
-        self._lock = threading.Lock()
-        self._active_sessions: Set[str] = set()
-        self._context_refs: weakref.WeakSet = weakref.WeakSet()
-
-    def _get_context_stack(self) -> List[ExecutionContext]:
-        """Get the current context stack for the thread."""
-        if not hasattr(self._context_stack, 'contexts'):
-            self._context_stack.contexts = []
-        return self._context_stack.contexts
-
-    def _get_current_context(self) -> ExecutionContext | None:
-        """Get the current execution context."""
-        stack = self._get_context_stack()
-        return stack[-1] if stack else None
-
-    def _update_session_metrics(self, session_id: str, execution_metrics: ExecutionMetrics) -> None:
-        """Update or create session metrics."""
-        with self._lock:
-            if session_id not in self._sessions:
-                return
-
-            session = self._sessions[session_id]
-            session.total_executions += 1
-
-            if execution_metrics.duration:
-                session.total_duration += execution_metrics.duration
-
-            if execution_metrics.error:
-                session.total_errors += 1
-
-            session.functions_called.add(execution_metrics.function_name)
-
-            if hasattr(execution_metrics, 'metadata') and execution_metrics.metadata:
-                if 'phase' in execution_metrics.metadata:
-                    session.phases_executed.add(execution_metrics.metadata['phase'])
-                if 'evaluation_id' in execution_metrics.metadata:
-                    session.evaluations.add(execution_metrics.metadata['evaluation_id'])
-                if 'batch_id' in execution_metrics.metadata:
-                    session.metadata['batch_id'] = execution_metrics.metadata['batch_id']
+        return False  # Don't suppress exceptions
 
     @contextmanager
-    def session(self, session_id: str | None = None, **metadata) -> Generator[ExecutionContext, None, None]:
+    def step(self, step_name: str, step_metadata: Dict[str, Any] | None = None):
+        """Context manager for monitored evaluation steps."""
+        if not self.monitor:
+            yield
+            return
+
+        full_step_name = f"{self.session_name}.{step_name}"
+        step_meta = {
+            "step_name": step_name,
+            "session_name": self.session_name,
+            **(step_metadata or {})
+        }
+        self.session_metadata["steps"].append(step_name)
+
+        # Create a monitoring decorator for this step
+        @self.monitor.monitor(
+            name=full_step_name,
+            enable_timing=True,
+            track_memory=True,
+            metadata=step_meta
+        )
+        def _monitored_step():
+            yield  # Execution happens here
+
+        try:
+            step_func = _monitored_step()
+            next(step_func)  # Advance to yield point
+            yield  # Execute the step code
+
+            try:
+                next(step_func)  # Finalize monitoring
+            except StopIteration:
+                pass
+
+        except Exception as e:
+            logger.error(f"Error in step '{step_name}': {str(e)}", exc_info=True)
+            raise
+
+    def get_session_stats(self) -> Dict[str, Any]:
+        """Get comprehensive statistics for the entire evaluation session."""
+        if not self.monitor:
+            return {"error": "Monitoring not enabled for this session"}
+
+        stats = {
+            "session_name": self.session_name,
+            "start_time": self.session_metadata["start_time"].isoformat(),
+            "end_time": self.session_metadata["end_time"].isoformat() if self.session_metadata["end_time"] else None,
+            "duration_seconds": (
+                (self.session_metadata["end_time"] - self.session_metadata["start_time"]).total_seconds()
+                if self.session_metadata["end_time"] else None
+            ),
+            "steps": self.session_metadata["steps"],
+            "step_details": {},
+            "aggregated": {
+                "total_duration": 0.0,
+                "total_memory_peak_mb": 0.0,
+                "total_api_calls": 0,
+                "error_count": 0
+            }
+        }
+
+        # Get stats for each step
+        for step in self.session_metadata["steps"]:
+            full_step_name = f"{self.session_name}.{step}"
+            step_stats = self.monitor.get_stats(full_step_name)
+
+            if step_stats:
+                stats["step_details"][step] = step_stats
+
+                # Aggregate totals
+                stats["aggregated"]["total_duration"] += step_stats.get("avg_duration", 0) * step_stats.get(
+                    "total_calls", 1)
+                stats["aggregated"]["total_memory_peak_mb"] = max(
+                    stats["aggregated"]["total_memory_peak_mb"],
+                    step_stats.get("memory_peak_mb", 0)
+                )
+                stats["aggregated"]["error_count"] += step_stats.get("error_count", 0)
+
+                # Count API calls if available
+                if "custom_metrics" in step_stats:
+                    api_calls = step_stats["custom_metrics"].get("total_api_calls", {}).get(full_step_name, 0)
+                    stats["aggregated"]["total_api_calls"] += api_calls
+
+        return stats
+
+    def get_step_metrics(self, step_name: str) -> ExecutionMetrics | None:
+        """Get raw execution metrics for a specific step."""
+        if not self.monitor:
+            return None
+
+        full_step_name = f"{self.session_name}.{step_name}"
+        history = self.monitor.get_execution_history(full_step_name)
+        return history[-1] if history else None
+
+    def get_step_stats(self, step_name: str) -> Dict[str, Any] | None:
+        """Get aggregated statistics for a specific step."""
+        if not self.monitor:
+            return None
+
+        full_step_name = f"{self.session_name}.{step_name}"
+        return self.monitor.get_stats(full_step_name)
+
+    def validate_session(self, thresholds: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Context manager for managing an evaluation session.
+        Validate session metrics against performance thresholds.
 
         Args:
-            session_id (str | None): Optional session ID. If None, a new ID will be generated.
-            **metadata: Additional metadata for the session.
+            thresholds: Dictionary of threshold values to check against
+                Example: {
+                    "max_duration_seconds": 60,
+                    "max_memory_mb": 1024,
+                    "max_error_rate": 5.0,
+                    "max_api_calls": 100
+                }
 
-        Yields:
-            ExecutionContext: The current execution context.
+        Returns:
+            Dictionary with validation results
         """
-        if not session_id:
-            session_id = f"session-{uuid.uuid4().hex[:8]}"
+        stats = self.get_session_stats()
+        results = {
+            "passed": True,
+            "checks": {}
+        }
 
-        context = ExecutionContext(session_id=session_id, metadata=metadata)
-        stack = self._get_context_stack()
-        stack.append(context)
+        # Check total duration
+        if "max_duration_seconds" in thresholds:
+            duration = stats.get("duration_seconds", 0)
+            max_duration = thresholds["max_duration_seconds"]
+            results["checks"]["duration"] = {
+                "value": duration,
+                "threshold": max_duration,
+                "passed": duration <= max_duration if duration else None
+            }
+            results["passed"] &= results["checks"]["duration"]["passed"] if results["checks"]["duration"]["passed"] else False
 
-        with self._lock:
-            if session_id in self._active_sessions:
-                raise RuntimeError(f"Session {session_id} is already active.")
+        # Check memory usage
+        if "max_memory_mb" in thresholds:
+            memory = stats["aggregated"].get("total_memory_peak_mb", 0)
+            max_memory = thresholds["max_memory_mb"]
+            results["checks"]["memory"] = {
+                "value": memory,
+                "threshold": max_memory,
+                "passed": memory <= max_memory
+            }
+            results["passed"] &= results["checks"]["memory"]["passed"]
 
-            self._active_sessions.add(session_id)
-            started_at = datetime.now()
-            session_metrics = SessionMetrics(session_id=session_id, started_at=started_at, metadata=metadata)
-            self._sessions[session_id] = session_metrics
-            self._session_contexts[session_id].append(context)
+        # Check error rate
+        if "max_error_rate" in thresholds:
+            total_calls = sum(
+                s.get("total_calls", 1)
+                for s in stats["step_details"].values()
+            )
+            error_count = stats["aggregated"].get("error_count", 0)
+            error_rate = (error_count / total_calls * 100) if total_calls > 0 else 0
+            max_error_rate = thresholds["max_error_rate"]
+            results["checks"]["error_rate"] = {
+                "value": error_rate,
+                "threshold": max_error_rate,
+                "passed": error_rate <= max_error_rate
+            }
+            results["passed"] &= results["checks"]["error_rate"]["passed"]
 
-        self._context_refs.add(context)
+        # Check API calls
+        if "max_api_calls" in thresholds:
+            api_calls = stats["aggregated"].get("total_api_calls", 0)
+            max_api_calls = thresholds["max_api_calls"]
+            results["checks"]["api_calls"] = {
+                "value": api_calls,
+                "threshold": max_api_calls,
+                "passed": api_calls <= max_api_calls
+            }
+            results["passed"] &= results["checks"]["api_calls"]["passed"]
 
-        original_wrap = self._monitor._wrap_execution
-
-        def enhanced_wrap(func, name, enable_timing, track_memory, metadata=None):
-            """Enhanced wrapper to include session context."""
-            wrapped_func = original_wrap(func, name, enable_timing, track_memory, metadata)
-
-            def session_aware_wrapper(*args, **kwargs):
-                result = wrapped_func(*args, **kwargs)
-
-                history = self._monitor.get_execution_history(name, limit=1)
+        return results
