@@ -8,10 +8,10 @@ from collections import defaultdict, deque
 
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import List, Dict, Deque, Callable, Any, Union, ParamSpec, TypeVar, runtime_checkable, Protocol
+from typing import List, Dict, Deque, Callable, Any, Union, ParamSpec, TypeVar, runtime_checkable, Protocol, Type
 
 from datetime import datetime
-from threading import Lock, RLock
+from threading import RLock
 from functools import lru_cache, wraps
 
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +26,7 @@ class MetricType(Enum):
     TIMING = "timing"
     MEMORY = "memory"
     API_CALL = "api_call"
+    SCORING = "scoring"
     CACHE_HIT = "cache_hit"
     ERROR = "error"
     CUSTOM = "custom"
@@ -34,7 +35,7 @@ class MetricType(Enum):
 @dataclass
 class ExecutionMetrics:
     """Comprehensive metrics for a function execution."""
-    function_name: str
+    procedure: str
     start_time: float
     end_time: float | None = None
     duration: float | None = None
@@ -139,22 +140,20 @@ class APICallTracker(MetricsCollector):
         self._lock = threading.Lock()
 
     def collect_before(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        return {"api_calls_before": dict(self._api_calls)}
+        return {"api_calls_history": dict(self._api_calls)}
 
     def collect_after(self, metadata: Dict[str, Any], result: Any) -> Dict[str, Any]:
         with self._lock:
             # Detect API calls by inspecting the call stack
-            stack = inspect.stack()
+            print(f"[APICallTracker] metadata:\n{metadata}")
             api_calls = 0
-            for frame in stack:
-                if 'clients' in frame.filename and any(
-                        method in frame.function
-                        for method in ['_build_payload', '_build_headers', 'chat', 'complete']
-                ):
-                    api_calls += 1
+            if metadata['category'] == MetricType.API_CALL:
+                api_calls += 1
+
+            print(f"{'---' * 10}")
 
             if api_calls > 0:
-                func_name = metadata.get('function_name', 'unknown')
+                func_name = metadata.get('procedure', 'unknown')
                 self._api_calls[func_name] += api_calls
 
         return {"api_calls_detected": api_calls, "total_api_calls": dict(self._api_calls)}
@@ -276,7 +275,7 @@ class FunctionMonitor:
 
             # Initialize execution metadata
             exec_metadata = {
-                'function_name': name,
+                'procedure': name,
                 'args_count': len(args),
                 'kwargs_count': len(kwargs),
                 **(metadata or {})
@@ -284,7 +283,7 @@ class FunctionMonitor:
 
             # Initialize execution metrics
             metrics = ExecutionMetrics(
-                function_name=name,
+                procedure=name,
                 start_time=start_time,
                 metadata=exec_metadata,
             )
@@ -343,7 +342,7 @@ class FunctionMonitor:
             enable_timing: bool = True,
             track_memory: bool = True,
             metadata: Dict[str, Any] | None = None,
-            collectors: List[MetricsCollector] | None = None
+            collectors: List[Type[MetricsCollector]] | None = None
     ) -> Callable[[Callable[P, T]], Callable[P, T]]:
         """
         Decorator factory for monitoring functions.
@@ -446,14 +445,14 @@ class FunctionMonitor:
             history = list(self._execution_history[name])
             return history[-limit:] if limit else history
 
-    def clear_history(self, function_name: str | None = None) -> None:
+    def clear_history(self, procedure: str | None = None) -> None:
         """Clear execution history."""
         with self._lock:
-            if function_name:
-                if function_name in self._execution_history:
-                    self._execution_history[function_name].clear()
-                if function_name in self._aggregated_stats:
-                    self._aggregated_stats[function_name] = AggregatedStats()
+            if procedure:
+                if procedure in self._execution_history:
+                    self._execution_history[procedure].clear()
+                if procedure in self._aggregated_stats:
+                    self._aggregated_stats[procedure] = AggregatedStats()
             else:
                 self._execution_history.clear()
                 self._aggregated_stats.clear()
@@ -528,14 +527,14 @@ def list_monitored_functions() -> Dict[str, Callable[..., Any]]:
     return _global_monitor.list_monitored_functions()
 
 
-def clear_history(function_name: str | None = None) -> None:
+def clear_history(procedure: str | None = None) -> None:
     """
     Clear execution history.
 
     Args:
-        function_name (str | None): Name of the function to clear history for.
+        procedure (str | None): Name of the function to clear history for.
     """
-    return _global_monitor.clear_history(function_name)
+    return _global_monitor.clear_history(procedure=procedure)
 
 
 def export_metrics(output_format: str = 'dict') -> Union[Dict[str, Any], str]:

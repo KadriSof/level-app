@@ -1,48 +1,89 @@
 """levelapp/core/session.py"""
 import logging
+import threading
 
 from datetime import datetime
 from contextlib import contextmanager
-from typing import Dict, Any
 
-from levelapp.utils.monitoring import FunctionMonitor, ExecutionMetrics
+from dataclasses import dataclass, field
+from collections import defaultdict
+from typing import Dict, List, Any, Callable, ContextManager
+
+from levelapp.utils.monitoring import FunctionMonitor
 
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class SessionMetadata:
+    """Metadata for an evaluation session."""
+    session_name: str
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    total_executions: int = 0
+    total_duration: float = 0.0
+    steps: Dict[str, 'StepMetadata'] = field(default_factory=dict)
+
+    @property
+    def is_active(self) -> bool:
+        """Check if the session is currently active."""
+        return self.ended_at is None
+
+    @property
+    def duration(self) -> float | None:
+        """Calculate the duration of the session in seconds."""
+        if not self.is_active:
+            return (self.ended_at - self.started_at).total_seconds()
+        return None
+
+
+@dataclass
+class StepMetadata:
+    """Metadata for a specific step within an evaluation session."""
+    step_name: str
+    session_name: str
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    memory_peak_mb: float | None = None
+    error_count: int = 0
+
+    @property
+    def is_active(self) -> bool:
+        """Check if the step is currently active."""
+        return self.ended_at is None
+
+    @property
+    def duration(self) -> float | None:
+        """Calculate the duration of the step in seconds."""
+        if not self.is_active:
+            return (self.ended_at - self.started_at).total_seconds()
+        return None
+
+
 class EvaluationSession:
     """Context manager for LLM evaluation sessions with integrated monitoring and stats retrieval."""
 
-    def __init__(self, session_name: str, monitor: FunctionMonitor, enable_monitoring: bool = True):
+    def __init__(self, session_name: str, monitor: FunctionMonitor | None = None):
         self.session_name = session_name
-        self.monitor = monitor if enable_monitoring else None
-        self.session_metadata = {
-            "session_name": session_name,
-            "start_time": None,
-            "end_time": None,
-            "steps": []
-        }
+        self.monitor = monitor or FunctionMonitor()
+        self.session_metadata = SessionMetadata(session_name=session_name)
+        self._lock = threading.RLock()
 
     def __enter__(self):
         """Start the evaluation session with monitoring."""
-        self.session_metadata["start_time"] = datetime.now()
-
-        if self.monitor:
-            logger.info(f"🚀 Starting evaluation session: {self.session_name}")
-
+        self.session_metadata.started_at = datetime.now()
+        logger.info(f"Starting evaluation session: {self.session_name}")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Finalize the session and log metrics."""
-        self.session_metadata["end_time"] = datetime.now()
+        self.session_metadata.ended_at = datetime.now()
+        session_duration = self.session_metadata.duration
+        logger.info(f"Completed session '{self.session_name}' in {session_duration:.2f}s")
 
-        if self.monitor:
-            session_duration = (self.session_metadata["end_time"] - self.session_metadata["start_time"]).total_seconds()
-            logger.info(f"✅ Completed session '{self.session_name}' in {session_duration:.2f}s")
-
-            if exc_type:
-                logger.error(f"Session ended with error: {exc_val}", exc_info=True)
+        if exc_type:
+            logger.error(f"Session ended with error: {exc_val}", exc_info=True)
 
         return False  # Don't suppress exceptions
 
@@ -54,170 +95,67 @@ class EvaluationSession:
             return
 
         full_step_name = f"{self.session_name}.{step_name}"
-        step_meta = {
-            "step_name": step_name,
-            "session_name": self.session_name,
-            **(step_metadata or {})
-        }
-        self.session_metadata["steps"].append(step_name)
 
-        # Create a monitoring decorator for this step
+        with self._lock:
+            step_meta = StepMetadata(
+                step_name=step_name,
+                session_name=self.session_name,
+                started_at=datetime.now()
+            )
+            self.session_metadata.steps[step_name] = step_meta
+
+        # Create the monitored function
         @self.monitor.monitor(
             name=full_step_name,
             enable_timing=True,
             track_memory=True,
-            metadata=step_meta
+            metadata={
+                "step_name": step_name,
+                "session_name": self.session_name,
+                **(step_metadata or {})
+            }
         )
         def _monitored_step():
-            yield  # Execution happens here
+            yield  # This is where the step execution happens
+
+        # Create and manage the generator
+        step_gen = _monitored_step()
 
         try:
-            step_func = _monitored_step()
-            next(step_func)  # Advance to yield point
-            yield  # Execute the step code
-
-            try:
-                next(step_func)  # Finalize monitoring
-            except StopIteration:
-                pass
+            next(step_gen)  # Enter the monitored context
+            yield  # Execute the step code here
 
         except Exception as e:
+            with self._lock:
+                step_meta.error_count += 1
             logger.error(f"Error in step '{step_name}': {str(e)}", exc_info=True)
             raise
 
-    def get_session_stats(self) -> Dict[str, Any]:
-        """Get comprehensive statistics for the entire evaluation session."""
-        if not self.monitor:
-            return {"error": "Monitoring not enabled for this session"}
+        finally:
+            try:
+                next(step_gen)  # Exit the monitored context
+            except StopIteration:
+                pass
 
+            with self._lock:
+                step_meta.ended_at = datetime.now()
+                self.session_metadata.total_executions += 1
+                if step_meta.duration:
+                    self.session_metadata.total_duration += step_meta.duration
+
+            logger.info(f"Completed step '{step_name}' in {step_meta.duration:.2f}s")
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get comprehensive session statistics."""
         stats = {
-            "session_name": self.session_name,
-            "start_time": self.session_metadata["start_time"].isoformat(),
-            "end_time": self.session_metadata["end_time"].isoformat() if self.session_metadata["end_time"] else None,
-            "duration_seconds": (
-                (self.session_metadata["end_time"] - self.session_metadata["start_time"]).total_seconds()
-                if self.session_metadata["end_time"] else None
-            ),
-            "steps": self.session_metadata["steps"],
-            "step_details": {},
-            "aggregated": {
-                "total_duration": 0.0,
-                "total_memory_peak_mb": 0.0,
-                "total_api_calls": 0,
-                "error_count": 0
-            }
+            "session": {
+                "name": self.session_name,
+                "duration": self.session_metadata.duration,
+                "start_time": self.session_metadata.started_at.isoformat() if self.session_metadata.started_at else None,
+                "end_time": self.session_metadata.ended_at.isoformat() if self.session_metadata.ended_at else None,
+                "steps": len(self.session_metadata.steps),
+                "errors": sum(s.error_count for s in self.session_metadata.steps.values())
+            },
+            "stats": self.monitor.get_all_stats()
         }
-
-        # Get stats for each step
-        for step in self.session_metadata["steps"]:
-            full_step_name = f"{self.session_name}.{step}"
-            step_stats = self.monitor.get_stats(full_step_name)
-
-            if step_stats:
-                stats["step_details"][step] = step_stats
-
-                # Aggregate totals
-                stats["aggregated"]["total_duration"] += step_stats.get("avg_duration", 0) * step_stats.get(
-                    "total_calls", 1)
-                stats["aggregated"]["total_memory_peak_mb"] = max(
-                    stats["aggregated"]["total_memory_peak_mb"],
-                    step_stats.get("memory_peak_mb", 0)
-                )
-                stats["aggregated"]["error_count"] += step_stats.get("error_count", 0)
-
-                # Count API calls if available
-                if "custom_metrics" in step_stats:
-                    api_calls = step_stats["custom_metrics"].get("total_api_calls", {}).get(full_step_name, 0)
-                    stats["aggregated"]["total_api_calls"] += api_calls
-
         return stats
-
-    def get_step_metrics(self, step_name: str) -> ExecutionMetrics | None:
-        """Get raw execution metrics for a specific step."""
-        if not self.monitor:
-            return None
-
-        full_step_name = f"{self.session_name}.{step_name}"
-        history = self.monitor.get_execution_history(full_step_name)
-        return history[-1] if history else None
-
-    def get_step_stats(self, step_name: str) -> Dict[str, Any] | None:
-        """Get aggregated statistics for a specific step."""
-        if not self.monitor:
-            return None
-
-        full_step_name = f"{self.session_name}.{step_name}"
-        return self.monitor.get_stats(full_step_name)
-
-    def validate_session(self, thresholds: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Validate session metrics against performance thresholds.
-
-        Args:
-            thresholds: Dictionary of threshold values to check against
-                Example: {
-                    "max_duration_seconds": 60,
-                    "max_memory_mb": 1024,
-                    "max_error_rate": 5.0,
-                    "max_api_calls": 100
-                }
-
-        Returns:
-            Dictionary with validation results
-        """
-        stats = self.get_session_stats()
-        results = {
-            "passed": True,
-            "checks": {}
-        }
-
-        # Check total duration
-        if "max_duration_seconds" in thresholds:
-            duration = stats.get("duration_seconds", 0)
-            max_duration = thresholds["max_duration_seconds"]
-            results["checks"]["duration"] = {
-                "value": duration,
-                "threshold": max_duration,
-                "passed": duration <= max_duration if duration else None
-            }
-            results["passed"] &= results["checks"]["duration"]["passed"] if results["checks"]["duration"]["passed"] else False
-
-        # Check memory usage
-        if "max_memory_mb" in thresholds:
-            memory = stats["aggregated"].get("total_memory_peak_mb", 0)
-            max_memory = thresholds["max_memory_mb"]
-            results["checks"]["memory"] = {
-                "value": memory,
-                "threshold": max_memory,
-                "passed": memory <= max_memory
-            }
-            results["passed"] &= results["checks"]["memory"]["passed"]
-
-        # Check error rate
-        if "max_error_rate" in thresholds:
-            total_calls = sum(
-                s.get("total_calls", 1)
-                for s in stats["step_details"].values()
-            )
-            error_count = stats["aggregated"].get("error_count", 0)
-            error_rate = (error_count / total_calls * 100) if total_calls > 0 else 0
-            max_error_rate = thresholds["max_error_rate"]
-            results["checks"]["error_rate"] = {
-                "value": error_rate,
-                "threshold": max_error_rate,
-                "passed": error_rate <= max_error_rate
-            }
-            results["passed"] &= results["checks"]["error_rate"]["passed"]
-
-        # Check API calls
-        if "max_api_calls" in thresholds:
-            api_calls = stats["aggregated"].get("total_api_calls", 0)
-            max_api_calls = thresholds["max_api_calls"]
-            results["checks"]["api_calls"] = {
-                "value": api_calls,
-                "threshold": max_api_calls,
-                "passed": api_calls <= max_api_calls
-            }
-            results["passed"] &= results["checks"]["api_calls"]["passed"]
-
-        return results
