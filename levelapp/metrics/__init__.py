@@ -61,9 +61,9 @@ class MetricRegistry:
 
 METRICS = FUZZY_METRICS | EXACT_METRICS
 
-for name, metric_class in METRICS.items():
+for name_, metric_class_ in METRICS.items():
     try:
-        MetricRegistry.register(name, metric_class)
+        MetricRegistry.register(name_, metric_class_)
 
     except Exception as e:
-        logger.info(f"Failed to register metric {name}: {e}")
+        logger.info(f"Failed to register metric {name_}: {e}")

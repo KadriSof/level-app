@@ -22,7 +22,7 @@ class ExactMatch(BaseMetric):
             'score_cutoff': self.score_cutoff
         }
 
-    @FunctionMonitor.monitor(name="exact_match", cached=True, enable_timing=True)
+    # @FunctionMonitor.monitor(name="exact_match", cached=True, enable_timing=True)
     def compute(self, generated: str, reference: str) -> Dict[str, Any]:
         """"
         Compute the exact match score between generated and reference strings.
@@ -71,7 +71,7 @@ class Levenshtein(BaseMetric):
             'score_cutoff': self.score_cutoff
         }
 
-    @FunctionMonitor.monitor(name="levenshtein", cached=True, enable_timing=True)
+    # @FunctionMonitor.monitor(name="levenshtein", cached=True, enable_timing=True)
     def compute(self, generated: str, reference: str) -> Dict[str, Any]:
         """
         Compute the Levenshtein distance score between generated and reference strings.
@@ -120,7 +120,7 @@ class JaroWinkler(BaseMetric):
             'score_cutoff': self.score_cutoff
         }
 
-    @FunctionMonitor.monitor(name="jaro_winkler", cached=True, enable_timing=True)
+    # @FunctionMonitor.monitor(name="jaro_winkler", cached=True, enable_timing=True)
     def compute(self, generated: str, reference: str) -> Dict[str, Any]:
         """
         Compute the Jaro-Winkler distance score between generated and reference strings.
@@ -169,7 +169,7 @@ class Hamming(BaseMetric):
             'score_cutoff': self.score_cutoff
         }
 
-    @FunctionMonitor.monitor(name="hamming", cached=True)
+    # @FunctionMonitor.monitor(name="hamming", cached=True)
     def compute(self, generated: str, reference: str) -> Dict[str, Any]:
         """
         Compute the Hamming distance score between generated and reference strings.
@@ -219,7 +219,7 @@ class PrefixMatch(BaseMetric):
         }
 
 
-    @FunctionMonitor.monitor(name="prefix_match", cached=True)
+    # @FunctionMonitor.monitor(name="prefix_match", cached=True)
     def compute(self, generated: str, reference: str) -> Dict[str, Any]:
         if not reference:  # Empty prefix matches everything
             return {"score": 1.0, "metadata": {...}}

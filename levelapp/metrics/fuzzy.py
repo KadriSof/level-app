@@ -22,7 +22,7 @@ class FuzzyRatio(BaseMetric):
             'score_cutoff': self.score_cutoff
         }
 
-    @FunctionMonitor.monitor(name="fuzzy_ratio", cached=True, enable_timing=True)
+    # @FunctionMonitor.monitor(name="fuzzy_ratio", cached=True, enable_timing=True)
     def compute(self, generated: str, reference: str) -> Dict[str, Any]:
         """
         Compute the fuzzy ratio between the generated text and the reference text.
@@ -76,7 +76,7 @@ class PartialRatio(BaseMetric):
             'score_cutoff': self.score_cutoff
         }
 
-    @FunctionMonitor.monitor(name="partial_ratio", cached=True, enable_timing=True)
+    # @FunctionMonitor.monitor(name="partial_ratio", cached=True, enable_timing=True)
     def compute(self, generated: str, reference: str) -> Dict[str, Any]:
         """
         Compute the partial fuzzy ratio between the generated text and the reference text.
