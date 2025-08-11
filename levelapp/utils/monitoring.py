@@ -23,12 +23,8 @@ T = TypeVar('T')
 
 class MetricType(Enum):
     """Types of metrics that can be collected."""
-    TIMING = "timing"
-    MEMORY = "memory"
     API_CALL = "api_call"
     SCORING = "scoring"
-    CACHE_HIT = "cache_hit"
-    ERROR = "error"
     CUSTOM = "custom"
 
 
@@ -36,7 +32,8 @@ class MetricType(Enum):
 class ExecutionMetrics:
     """Comprehensive metrics for a function execution."""
     procedure: str
-    start_time: float
+    category: MetricType = MetricType.CUSTOM
+    start_time: float | None = None
     end_time: float | None = None
     duration: float | None = None
     memory_before: int | None = None
@@ -44,13 +41,14 @@ class ExecutionMetrics:
     memory_peak: int | None = None
     cache_hit: bool = False
     error: str | None = None
-    custom_metrics: Dict[str, Any] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def finalize(self) -> None:
         """Finalize metrics calculation."""
         if self.end_time and self.start_time:
             self.duration = self.end_time - self.start_time
+
+    def update_duration(self, value: float) -> None:
+        self.duration = value
 
 
 @dataclass
@@ -107,7 +105,7 @@ class MetricsCollector(Protocol):
         """Collect metrics before function execution."""
         ...
 
-    def collect_after(self, metadata: Dict[str, Any], result: Any) -> Dict[str, Any]:
+    def collect_after(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Collect metrics after function execution."""
         ...
 
@@ -123,13 +121,20 @@ class MemoryTracker(MetricsCollector):
             self._tracking = True
 
         current, peak = tracemalloc.get_traced_memory()
-        return {"memory_before": current, "memory_peak": peak}
+        return {"memory_before": current / 10**6, "memory_peak": peak / 10**6}
 
-    def collect_after(self, metadata: Dict[str, Any], result: Any) -> Dict[str, Any]:
+    def collect_after(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         if self._tracking:
             current, peak = tracemalloc.get_traced_memory()
-            return {"memory_after": current, "memory_peak": peak}
+            return {
+                "memory_after": current / 10**6,
+                "memory_peak": peak / 10**6,
+            }
         return {}
+
+    def __del__(self):
+        if self._tracking:
+            tracemalloc.stop()
 
 
 class APICallTracker(MetricsCollector):
@@ -142,15 +147,11 @@ class APICallTracker(MetricsCollector):
     def collect_before(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         return {"api_calls_history": dict(self._api_calls)}
 
-    def collect_after(self, metadata: Dict[str, Any], result: Any) -> Dict[str, Any]:
+    def collect_after(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
-            # Detect API calls by inspecting the call stack
-            print(f"[APICallTracker] metadata:\n{metadata}")
             api_calls = 0
             if metadata['category'] == MetricType.API_CALL:
                 api_calls += 1
-
-            print(f"{'---' * 10}")
 
             if api_calls > 0:
                 func_name = metadata.get('procedure', 'unknown')
@@ -163,13 +164,29 @@ class FunctionMonitor:
     """Core function monitoring system."""
 
     def __init__(self, max_history: int = 1000):
-        self._monitored_functions: Dict[str, Callable[..., Any]] = {}
-        self._execution_history: Dict[str, Deque[ExecutionMetrics]] = defaultdict(lambda: deque(maxlen=max_history))
+        self._lock = RLock()
+        self._monitored_procedures: Dict[str, Callable[..., Any]] = {}
+        self._execution_history: Dict[str, List[ExecutionMetrics]] = defaultdict(list)
         self._aggregated_stats: Dict[str, AggregatedStats] = defaultdict(AggregatedStats)
         self._collectors: List[MetricsCollector] = []
-        self._lock = RLock()
         self.add_collector(MemoryTracker())
         self.add_collector(APICallTracker())
+
+    def update_procedure_duration(self, name: str, value: float) -> None:
+        """
+        Update the duration of a monitored procedure by name.
+
+        Args:
+            name: The name of the procedure to retrieve.
+            value: The value to retrieve for the procedure.
+        """
+        with self._lock:
+            history = self._execution_history[name]
+            if not history:
+                return
+
+            for entry in history:
+                entry.update_duration(value=value)
 
     def add_collector(self, collector: MetricsCollector) -> None:
         """
@@ -208,14 +225,14 @@ class FunctionMonitor:
 
         return metrics
 
-    def _collect_metrics_after(self, metadata: Dict[str, Any], result: Any) -> Dict[str, Any]:
+    def _collect_metrics_after(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
         Collect metrics after function execution using registered collectors.
         """
         metrics = {}
         for collector in self._collectors:
             try:
-                metrics.update(collector.collect_after(metadata=metadata, result=result))
+                metrics.update(collector.collect_after(metadata=metadata))
             except Exception as e:
                 logger.warning(f"Metrics collector failed: {e}")
 
@@ -236,9 +253,9 @@ class FunctionMonitor:
             cache_info_after = cached_func.cache_info()
 
             if not hasattr(wrapper, '_cache_hit_info'):
-                wrapper._cache_hit_info = threading.local()
+                wrapper.cache_hit_info = threading.local()
 
-            wrapper._cache_hit_info.is_hit = cache_info_after.hits > cache_info_before.hits
+            wrapper.cache_hit_info.is_hit = cache_info_after.hits > cache_info_before.hits
 
             return result
 
@@ -252,9 +269,9 @@ class FunctionMonitor:
             self,
             func: Callable[P, T],
             name: str,
+            category: MetricType,
             enable_timing: bool,
             track_memory: bool,
-            metadata: Dict[str, Any] | None = None
     ) -> Callable[P, T]:
         """
         Wrap function execution with timing and error handling.
@@ -264,49 +281,42 @@ class FunctionMonitor:
             name: Unique identifier for the function
             enable_timing: Enable execution time logging
             track_memory: Enable memory tracking
-            metadata: Optional metadata for the execution context
 
         Returns:
             Wrapped function
         """
         @wraps(func)
         def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
-            start_time = time.perf_counter()
-
             # Initialize execution metadata
-            exec_metadata = {
-                'procedure': name,
-                'args_count': len(args),
-                'kwargs_count': len(kwargs),
-                **(metadata or {})
-            }
+            exec_metadata = {'procedure': name, 'category': category}
 
             # Initialize execution metrics
             metrics = ExecutionMetrics(
                 procedure=name,
-                start_time=start_time,
-                metadata=exec_metadata,
+                category=category,
             )
 
             # Collect pre-execution metrics
-            if track_memory or self._collectors:
+            if track_memory and self._collectors:
+                # TODO-0: I don't like this, but it works for now.
                 pre_metrics = self._collect_metrics_before(metadata=exec_metadata)
                 metrics.memory_before = pre_metrics.get('memory_before')
-                metrics.custom_metrics.update(pre_metrics)
+
+            if enable_timing:
+                metrics.start_time = time.perf_counter()
 
             try:
                 result = func(*args, **kwargs)
 
                 # Check for cache hit
                 if hasattr(func, 'cache_info') and hasattr(func, '_cache_hit_info'):
-                    metrics.cache_hit = getattr(func._cache_hit_info, 'is_hit', False)
+                    metrics.cache_hit = getattr(func.cache_hit_info, 'is_hit', False)
 
                 # Collect post-execution metrics
-                if track_memory or self._collectors:
-                    post_metrics = self._collect_metrics_after(exec_metadata, result)
+                if track_memory and self._collectors:
+                    post_metrics = self._collect_metrics_after(metadata=exec_metadata)
                     metrics.memory_after = post_metrics.get('memory_after')
                     metrics.memory_peak = post_metrics.get('memory_peak')
-                    metrics.custom_metrics.update(post_metrics)
 
                 return result
 
@@ -337,11 +347,11 @@ class FunctionMonitor:
     def monitor(
             self,
             name: str,
+            category: MetricType,
             cached: bool = False,
             maxsize: int | None = 128,
             enable_timing: bool = True,
             track_memory: bool = True,
-            metadata: Dict[str, Any] | None = None,
             collectors: List[Type[MetricsCollector]] | None = None
     ) -> Callable[[Callable[P, T]], Callable[P, T]]:
         """
@@ -349,11 +359,11 @@ class FunctionMonitor:
 
         Args:
             name: Unique identifier for the function
+            category: Category of the metric (e.g., API_CALL, SCORING)
             cached: Enable LRU caching
             maxsize: Maximum cache size
             enable_timing: Record execution time
             track_memory: Track memory usage
-            metadata: Optional metadata for the execution context
             collectors: Optional list of custom metrics collectors
 
         Returns:
@@ -370,16 +380,16 @@ class FunctionMonitor:
             monitored_func = self._wrap_execution(
                 func=func,
                 name=name,
+                category=category,
                 enable_timing=enable_timing,
                 track_memory=track_memory,
-                metadata=metadata or {}
             )
 
             with self._lock:
-                if name in self._monitored_functions:
+                if name in self._monitored_procedures:
                     raise ValueError(f"Function '{name}' is already registered.")
 
-                self._monitored_functions[name] = monitored_func
+                self._monitored_procedures[name] = monitored_func
 
             return monitored_func
 
@@ -393,7 +403,7 @@ class FunctionMonitor:
             List[str]: Names of all registered functions
         """
         with self._lock:
-            return dict(self._monitored_functions)
+            return dict(self._monitored_procedures)
 
     def get_stats(self, name: str) -> Dict[str, Any] | None:
         """
@@ -406,12 +416,12 @@ class FunctionMonitor:
             Dict[str, Any] | None: Dictionary containing function statistics or None if not found.
         """
         with self._lock:
-            if name not in self._monitored_functions:
+            if name not in self._monitored_procedures:
                 return None
 
-            func = self._monitored_functions[name]
+            func = self._monitored_procedures[name]
             stats = self._aggregated_stats[name]
-            history = list(self._execution_history[name])
+            history = self._execution_history[name]
 
             return {
                 'name': name,
@@ -433,16 +443,26 @@ class FunctionMonitor:
         with self._lock:
             return {
                 name: self.get_stats(name)
-                for name in self._monitored_functions.keys()
+                for name in self._monitored_procedures.keys()
             }
 
-    def get_execution_history(self, name: str, limit: int | None = None) -> List[ExecutionMetrics]:
-        """Get execution history for a specific function."""
+    def get_execution_history(
+            self,
+            name: str | None = None,
+            category: MetricType | None = None,
+            limit: int | None = None
+    ) -> list[ExecutionMetrics]:
+        """Get execution history filtered by procedure name or category."""
         with self._lock:
-            if name not in self._execution_history:
-                return []
+            if name:
+                history = self._execution_history.get(name, [])
+            else:
+                history = [m for h in self._execution_history.values() for m in h]
 
-            history = list(self._execution_history[name])
+            if category:
+                history = [m for m in history if m.category == category]
+
+            history.sort(key=lambda m: m.start_time or 0)
             return history[-limit:] if limit else history
 
     def clear_history(self, procedure: str | None = None) -> None:
@@ -486,7 +506,7 @@ class FunctionMonitor:
             raise ValueError(f"Unsupported format: {output_format}")
 
 
-_global_monitor = FunctionMonitor()
+MonitoringAspect = FunctionMonitor()
 
 
 # Global monitoring functions for backward compatibility.
@@ -501,7 +521,7 @@ def monitor(name: str, **kwargs) -> Callable[[Callable[P, T]], Callable[P, T]]:
     Returns:
         Callable[[Callable[P, T]], Callable[P, T]]: Decorator function
     """
-    return _global_monitor.monitor(name=name, **kwargs)
+    return MonitoringAspect.monitor(name=name, **kwargs)
 
 
 def get_stats(name: str) -> Dict[str, Any] | None:
@@ -514,7 +534,7 @@ def get_stats(name: str) -> Dict[str, Any] | None:
     Returns:
         Dict[str, Any] | None: Function statistics or None if not found.
     """
-    return _global_monitor.get_stats(name=name)
+    return MonitoringAspect.get_stats(name=name)
 
 
 def list_monitored_functions() -> Dict[str, Callable[..., Any]]:
@@ -524,7 +544,7 @@ def list_monitored_functions() -> Dict[str, Callable[..., Any]]:
     Returns:
         Dict[str, Callable[..., Any]]: Dictionary of monitored function names and their callable objects.
     """
-    return _global_monitor.list_monitored_functions()
+    return MonitoringAspect.list_monitored_functions()
 
 
 def clear_history(procedure: str | None = None) -> None:
@@ -534,7 +554,7 @@ def clear_history(procedure: str | None = None) -> None:
     Args:
         procedure (str | None): Name of the function to clear history for.
     """
-    return _global_monitor.clear_history(procedure=procedure)
+    return MonitoringAspect.clear_history(procedure=procedure)
 
 
 def export_metrics(output_format: str = 'dict') -> Union[Dict[str, Any], str]:
@@ -547,7 +567,7 @@ def export_metrics(output_format: str = 'dict') -> Union[Dict[str, Any], str]:
     Returns:
         Union[Dict[str, Any], str]: Exported metrics in the specified format.
     """
-    return _global_monitor.export_metrics(output_format)
+    return MonitoringAspect.export_metrics(output_format)
 
 
 # Convenience decorators

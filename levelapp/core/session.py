@@ -1,16 +1,15 @@
 """levelapp/core/session.py"""
 import logging
 import threading
+import time
 
 from datetime import datetime
 from contextlib import contextmanager
 
 from dataclasses import dataclass, field
-from collections import defaultdict
-from typing import Dict, List, Any, Callable, ContextManager
+from typing import Dict, List, Any
 
-from levelapp.utils.monitoring import FunctionMonitor
-
+from levelapp.utils.monitoring import FunctionMonitor, MetricType, ExecutionMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +42,11 @@ class StepMetadata:
     """Metadata for a specific step within an evaluation session."""
     step_name: str
     session_name: str
-    started_at: datetime | None = None
-    ended_at: datetime | None = None
+    started_at: float | None = None
+    ended_at: float | None = None
     memory_peak_mb: float | None = None
     error_count: int = 0
+    procedures_stats: List[ExecutionMetrics] | None = None
 
     @property
     def is_active(self) -> bool:
@@ -57,105 +57,108 @@ class StepMetadata:
     def duration(self) -> float | None:
         """Calculate the duration of the step in seconds."""
         if not self.is_active:
-            return (self.ended_at - self.started_at).total_seconds()
+            return self.ended_at - self.started_at
         return None
 
 
-class EvaluationSession:
-    """Context manager for LLM evaluation sessions with integrated monitoring and stats retrieval."""
+class StepContext:
+    """Context manager for an evaluation step within an EvaluationSession."""
+    def __init__(self, session: "EvaluationSession", step_name: str, category: MetricType):
+        self.session = session
+        self.step_name = step_name
+        self.category = category
+        self.step_meta: StepMetadata | None = None
+        self.full_step_name = f"{session.session_name}.{step_name}"
+        self._monitored_func = None
+        self._func_gen = None
 
+    def __enter__(self):
+        with self.session.lock:
+            self.step_meta = StepMetadata(
+                step_name=self.step_name,
+                session_name=self.session.session_name,
+                started_at=time.perf_counter()
+            )
+            self.session.session_metadata.steps[self.step_name] = self.step_meta
+
+        # Wrap with FunctionMonitor
+        self._monitored_func = self.session.monitor.monitor(
+            name=self.full_step_name,
+            category=self.category,
+            enable_timing=True,
+            track_memory=True,
+        )(self._step_wrapper)
+
+        # Start monitoring
+        self._func_gen = self._monitored_func()
+        next(self._func_gen)  # Enter monitoring
+        return self  # returning self allows nested instrumentation
+
+    def _step_wrapper(self):
+        yield  # Actual user step execution happens here
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            next(self._func_gen)  # Exit monitoring
+        except StopIteration:
+            pass
+
+        with self.session.lock:
+            self.step_meta.ended_at = time.perf_counter()
+            if exc_type:
+                self.step_meta.error_count += 1
+            self.session.session_metadata.total_executions += 1
+            if self.step_meta.duration:
+                self.session.monitor.update_procedure_duration(name=self.full_step_name, value=self.step_meta.duration)
+                self.session.session_metadata.total_duration += self.step_meta.duration
+
+        logger.info(f"Completed step '{self.step_name}' in {self.step_meta.duration:.2f}s")
+
+        return False  # Don't suppress exceptions
+
+
+class EvaluationSession:
+    """Context manager for LLM evaluation sessions with integrated monitoring."""
     def __init__(self, session_name: str, monitor: FunctionMonitor | None = None):
         self.session_name = session_name
         self.monitor = monitor or FunctionMonitor()
         self.session_metadata = SessionMetadata(session_name=session_name)
         self._lock = threading.RLock()
 
+    @property
+    def lock(self):
+        return self._lock
+
     def __enter__(self):
-        """Start the evaluation session with monitoring."""
         self.session_metadata.started_at = datetime.now()
         logger.info(f"Starting evaluation session: {self.session_name}")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Finalize the session and log metrics."""
         self.session_metadata.ended_at = datetime.now()
-        session_duration = self.session_metadata.duration
-        logger.info(f"Completed session '{self.session_name}' in {session_duration:.2f}s")
-
+        logger.info(
+            f"Completed session '{self.session_name}' "
+            f"in {self.session_metadata.duration:.2f}s"
+        )
         if exc_type:
             logger.error(f"Session ended with error: {exc_val}", exc_info=True)
+        return False
 
-        return False  # Don't suppress exceptions
-
-    @contextmanager
-    def step(self, step_name: str, step_metadata: Dict[str, Any] | None = None):
-        """Context manager for monitored evaluation steps."""
-        if not self.monitor:
-            yield
-            return
-
-        full_step_name = f"{self.session_name}.{step_name}"
-
-        with self._lock:
-            step_meta = StepMetadata(
-                step_name=step_name,
-                session_name=self.session_name,
-                started_at=datetime.now()
-            )
-            self.session_metadata.steps[step_name] = step_meta
-
-        # Create the monitored function
-        @self.monitor.monitor(
-            name=full_step_name,
-            enable_timing=True,
-            track_memory=True,
-            metadata={
-                "step_name": step_name,
-                "session_name": self.session_name,
-                **(step_metadata or {})
-            }
-        )
-        def _monitored_step():
-            yield  # This is where the step execution happens
-
-        # Create and manage the generator
-        step_gen = _monitored_step()
-
-        try:
-            next(step_gen)  # Enter the monitored context
-            yield  # Execute the step code here
-
-        except Exception as e:
-            with self._lock:
-                step_meta.error_count += 1
-            logger.error(f"Error in step '{step_name}': {str(e)}", exc_info=True)
-            raise
-
-        finally:
-            try:
-                next(step_gen)  # Exit the monitored context
-            except StopIteration:
-                pass
-
-            with self._lock:
-                step_meta.ended_at = datetime.now()
-                self.session_metadata.total_executions += 1
-                if step_meta.duration:
-                    self.session_metadata.total_duration += step_meta.duration
-
-            logger.info(f"Completed step '{step_name}' in {step_meta.duration:.2f}s")
+    def step(self, step_name: str, category: MetricType = MetricType.CUSTOM) -> StepContext:
+        """Create a monitored evaluation step."""
+        return StepContext(self, step_name, category)
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get comprehensive session statistics."""
-        stats = {
+        return {
             "session": {
                 "name": self.session_name,
                 "duration": self.session_metadata.duration,
-                "start_time": self.session_metadata.started_at.isoformat() if self.session_metadata.started_at else None,
-                "end_time": self.session_metadata.ended_at.isoformat() if self.session_metadata.ended_at else None,
+                "start_time": self.session_metadata.started_at.isoformat()
+                if self.session_metadata.started_at else None,
+                "end_time": self.session_metadata.ended_at.isoformat()
+                if self.session_metadata.ended_at else None,
                 "steps": len(self.session_metadata.steps),
                 "errors": sum(s.error_count for s in self.session_metadata.steps.values())
             },
             "stats": self.monitor.get_all_stats()
         }
-        return stats
