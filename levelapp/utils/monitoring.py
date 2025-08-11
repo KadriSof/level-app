@@ -1,14 +1,13 @@
 """levelapp/utils.monitoring.py"""
 import logging
-import inspect
 import threading
 import time
 import tracemalloc
-from collections import defaultdict, deque
+from collections import defaultdict
 
 from enum import Enum
-from dataclasses import dataclass, field
-from typing import List, Dict, Deque, Callable, Any, Union, ParamSpec, TypeVar, runtime_checkable, Protocol, Type
+from dataclasses import dataclass
+from typing import List, Dict, Callable, Any, Union, ParamSpec, TypeVar, runtime_checkable, Protocol, Type
 
 from datetime import datetime
 from threading import RLock
@@ -187,6 +186,7 @@ class FunctionMonitor:
 
             for entry in history:
                 entry.update_duration(value=value)
+                self._aggregated_stats[name].update(metrics=entry)
 
     def add_collector(self, collector: MetricsCollector) -> None:
         """
@@ -195,9 +195,6 @@ class FunctionMonitor:
         Args:
             collector: An instance of a class implementing MetricsCollector protocol.
         """
-        if not isinstance(collector, MetricsCollector):
-            raise TypeError("Collector must implement MetricsCollector protocol.")
-
         with self._lock:
             self._collectors.append(collector)
 
@@ -309,8 +306,9 @@ class FunctionMonitor:
                 result = func(*args, **kwargs)
 
                 # Check for cache hit
-                if hasattr(func, 'cache_info') and hasattr(func, '_cache_hit_info'):
-                    metrics.cache_hit = getattr(func.cache_hit_info, 'is_hit', False)
+                cache_hit_info = getattr(func, 'cache_hit_info', None)
+                if hasattr(func, 'cache_info') and cache_hit_info is not None:
+                    metrics.cache_hit = getattr(cache_hit_info, 'is_hit', False)
 
                 # Collect post-execution metrics
                 if track_memory and self._collectors:
