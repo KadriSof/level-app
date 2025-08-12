@@ -6,6 +6,7 @@ including test configurations, batch metadata, and evaluation results.
 """
 from enum import Enum
 from uuid import UUID, uuid4
+from datetime import datetime
 
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, HttpUrl, SecretStr, Field, computed_field
@@ -18,7 +19,7 @@ class InteractionLevel(str, Enum):
     FINAL = "final"
 
 
-# TODO: Remove this?
+# TODO-0: Remove this?
 class InteractionDetails(BaseModel):
     """Model representing details of a simulated interaction."""
     reply: Optional[str] = "No response"
@@ -48,7 +49,7 @@ class ConversationScript(BaseModel):
 
 
 class ScriptsBatch(BaseModel):
-    id: UUID = Field(default=uuid4, description="Batch identifier")
+    id: UUID = Field(default_factory=uuid4, description="Batch identifier")
     scripts: List[ConversationScript] = Field(default_factory=list, description="List of conversation scripts")
 
 
@@ -56,7 +57,7 @@ class ScriptsBatch(BaseModel):
 class EndpointConfig(BaseModel):
     url: HttpUrl
     api_key: SecretStr
-    payload_template: Dict[str, Any]
+    payload_template: Dict[str, Any] | None
 
     @property
     def headers(self) -> Dict[str, Any]:
@@ -72,36 +73,37 @@ class EndpointConfig(BaseModel):
 
 class InteractionResults(BaseModel):
     """Represents metadata extracted from a VLA interaction."""
-    generated_reply: Optional[str] = "No response"
-    generated_metadata: Optional[Dict[str, Any]] = {}
-    guardrail_details: Optional[Dict[str, Any]] = {}
-    # TODO: Remove 'interaction_type'?
-    interaction_type: Optional[str] = ""
+    generated_reply: str | None = "No response"
+    generated_metadata: Dict[str, Any] | None = {}
+    guardrail_details: Dict[str, Any] | None = {}
+    # TODO-1: Remove 'interaction_type'?
+    interaction_type: str | None = ""
 
 
 class InteractionEvaluationResult(BaseModel):
     """Model representing the evaluation result of an interaction."""
     evaluations: Dict[str, Any]
     extracted_metadata_evaluation: float
-    scenario_id: str
 
 
-class BatchDetails(BaseModel):
+class SimulationResults(BaseModel):
     # Initial data
     project_id: str = Field(default_factory=uuid4, description="Project identifier")
     user_id: str = Field(default_factory=uuid4, description="User identifier")
     batch_id: str = Field(default_factory=uuid4, description="Batch identifier")
     # Collected data
-    started_at: Optional[float]
-    finished_at: Optional[float]
-    evaluation_summary: Optional[Dict[str, Any]]
-    average_scores: Optional[Dict[str, Any]]
-    simulation_results: Optional[List[Dict[str, Any]]]
+    started_at: datetime = datetime.now()
+    finished_at: datetime
+    # Collected Results
+    evaluation_summary: Dict[str, Any] | None = Field(default_factory=dict, description="Evaluation result")
+    average_scores: Dict[str, Any] | None = Field(default_factory=dict, description="Average scores")
+    # TODO-2: I am not sure about this 'simulation_results' field. Maybe we can remove it.
+    simulation_results: List[Dict[str, Any]] | None = Field(default_factory=list, description="Simulation results")
 
     @computed_field
     @property
     def elapsed_time(self) -> float:
-        return self.finished_at - self.started_at
+        return (self.finished_at - self.started_at).total_seconds()
 
 
 class TestResults(BaseModel):
@@ -109,4 +111,4 @@ class TestResults(BaseModel):
     ionos_model_name: str = Field(..., alias="ionosModelName")
     test_name: str = Field(..., alias="testName")
     test_type: str = Field(..., alias="testType")
-    batch_details: Optional[BatchDetails] = Field(..., alias="results")
+    batch_details: Optional[SimulationResults] = Field(..., alias="results")

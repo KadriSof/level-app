@@ -3,18 +3,19 @@
 """
 
 import asyncio
+import json
 import logging
 import time
-import uuid
+
+from uuid import UUID
 from collections import defaultdict
 from datetime import datetime
-from http.client import HTTPException
 from typing import Dict, Any, List
 
 from .base import BaseDatastore, BaseEvaluator
 from ..simulator.schemas import (
     InteractionEvaluationResult,
-    EndpointConfig, ScriptsBatch, ConversationScript, BatchDetails, TestResults,
+    EndpointConfig, ScriptsBatch, ConversationScript, SimulationResults
 )
 from ..simulator.utils import (
     extract_interaction_details,
@@ -58,8 +59,6 @@ class ConversationSimulator:
     async def run_batch_test(
         self,
         test_batch: ScriptsBatch,
-        batch_details: BatchDetails,
-        test_details: TestResults,
         attempts: int = 1,
     ) -> Dict[str, Any]:
         """
@@ -67,44 +66,47 @@ class ConversationSimulator:
 
         Args:
             test_batch (ScriptsBatch): Scenario batch object.
-            batch_details (Dict[str, Any]): Test batch test details.
-            test_details (Dict[str, Any]): Test details dictionary.
             attempts (int): Number of attempts to run the simulation.
 
         Returns:
             Dict[str, Any]: The results of the batch test.
         """
-        self.logger.info(
-            f"[run_batch_test] Starting batch test for batch: {test_details.test_name}"
-        )
-        started_at = datetime.now().isoformat()
+        self.logger.info("[run_batch_test] Starting batch test for batch.")
+        started_at = datetime.now()
 
         self.test_batch = test_batch
         results = await self.simulate_conversation(attempts=attempts)
 
-        finished_at = datetime.now().isoformat()
+        finished_at = datetime.now()
 
-        batch_details.started_at = started_at
-        batch_details.finished_at = finished_at
-        batch_details.evaluation_summary = self.verdict_summaries
-        batch_details.average_scores = results["averageScores"]
-        batch_details.simulation_results = results["scenarios"]
+        results = SimulationResults(
+            started_at=started_at,
+            finished_at=finished_at,
+            evaluation_summary=self.verdict_summaries,
+            average_scores=results.get("average_scores", {}),
+        )
 
-        test_details.batch_details = batch_details
+        # batch_details.started_at = started_at
+        # batch_details.finished_at = finished_at
+        # batch_details.evaluation_summary = self.verdict_summaries
+        # batch_details.average_scores = results["averageScores"]
+        # batch_details.simulation_results = results["scenarios"]
+        #
+        # test_details.batch_details = batch_details
+        #
+        # try:
+        #     self.storage_service.save_batch_test_results(
+        #         user_id=results.user_id,
+        #         project_id=results.project_id,
+        #         batch_id=results.batch_id,
+        #         data=test_details.model_dump(by_alias=True),
+        #     )
+        #
+        # # TODO-1: Create custom exceptions for 'DataStore' implementations.
+        # except HTTPException as e:
+        #     self.logger.error(f"[run_batch_test] Failed to save batch result: {e}")
 
-        try:
-            self.storage_service.save_batch_test_results(
-                user_id=batch_details.user_id,
-                project_id=batch_details.project_id,
-                batch_id=batch_details.batch_id,
-                data=test_details.model_dump(by_alias=True),
-            )
-
-        # TODO-1: Create custom exceptions for 'DataStore' implementations.
-        except HTTPException as e:
-            self.logger.error(f"[run_batch_test] Failed to save batch result: {e}")
-
-        return {"batchId": batch_details.batch_id, "status": "COMPLETE"}
+        return {"results": results, "status": "COMPLETE"}
 
     async def simulate_conversation(self, attempts: int = 1) -> Dict[str, Any]:
         """
@@ -172,11 +174,10 @@ class ConversationSimulator:
             collected_scores: Dict[str, List[Any]] = defaultdict(list)
             collected_verdicts: Dict[str, List[str]] = defaultdict(list)
             # TODO-2: Remove the 'conversation_id' from 'simulate_interactions' signature.
-            conversation_id = f"<CONV-ID:{str(uuid.uuid4())}>"
 
             initial_interaction_results = await self.simulate_interactions(
                 script=script,
-                conversation_id=conversation_id,
+                conversation_id=script.id,
                 evaluation_verdicts=collected_verdicts,
                 collected_scores=collected_scores,
             )
@@ -198,7 +199,7 @@ class ConversationSimulator:
 
             return {
                 "attempt": attempt_number + 1,
-                "conversation_id": conversation_id,
+                "conversation_id": script.id,
                 "total_duration": elapsed_time,
                 "interaction_results": initial_interaction_results,
                 "evaluation_verdicts": collected_verdicts,
@@ -218,8 +219,7 @@ class ConversationSimulator:
         )
 
         return {
-            "scenarioId": script.scenario_title.replace(" ", "-"),
-            "scenarioName": script.scenario_title,
+            "scenarioId": script.id,
             "attempts": attempt_results,
             "averageScores": average_scores,
         }
@@ -227,7 +227,7 @@ class ConversationSimulator:
     async def simulate_interactions(
         self,
         script: ConversationScript,
-        conversation_id: str,
+        conversation_id: UUID,
         evaluation_verdicts: Dict[str, List[str]],
         collected_scores: Dict[str, List[Any]],
     ) -> List[Dict[str, Any]]:
@@ -236,7 +236,7 @@ class ConversationSimulator:
 
         Args:
             script (ConversationScript): The script to simulate.
-            conversation_id (str): The conversation ID.
+            conversation_id (UUID): The conversation ID.
             evaluation_verdicts(Dict[str, List[str]]): evaluation verdict for each evaluator.
             collected_scores(Dict[str, List[Any]]): collected scores for each target.
 
@@ -252,16 +252,17 @@ class ConversationSimulator:
         interactions = script.interactions
 
         for interaction in interactions:
-            interaction.conversation_id = conversation_id
+            interaction.id = conversation_id
             user_message = interaction.user_message
 
             # TODO-3: Add payload prep here.
+            payload = json.loads(interaction.model_dump_json())
 
             response = await async_vla_request(
                 url=self._endpoint,
                 headers=self._headers,
                 # TODO-4: Adjust the payload dump that needs to be passed for the request.
-                payload=interaction.model_dump(by_alias=True),
+                payload=payload,
             )
 
             reference_reply = interaction.reference_reply
@@ -351,15 +352,15 @@ class ConversationSimulator:
         Returns:
             InteractionEvaluationResult: The evaluation results.
         """
-        openai_eval_task = self.evaluation_service.evaluate_response(
+        openai_eval_task = self.evaluation_service.evaluate(
             provider="openai",
-            output_text=generated_reply,
+            generated_text=generated_reply,
             reference_text=reference_reply,
         )
 
-        ionos_eval_task = self.evaluation_service.evaluate_response(
+        ionos_eval_task = self.evaluation_service.evaluate(
             provider="ionos",
-            output_text=generated_reply,
+            generated_text=generated_reply,
             reference_text=reference_reply,
         )
 
@@ -375,10 +376,8 @@ class ConversationSimulator:
         guardrail_flag = 1 if generated_guardrail == reference_guardrail else 0
 
         return InteractionEvaluationResult(
-            openaiReplyEvaluation=openai_reply_evaluation,
-            ionosReplyEvaluation=ionos_reply_evaluation,
-            extractedMetadataEvaluation=extracted_metadata_evaluation,
-            guardrailFlag=guardrail_flag,
+            evaluations={"openai": openai_reply_evaluation, "ionos": ionos_reply_evaluation},
+            extracted_metadata_evaluation=extracted_metadata_evaluation,
         )
 
     @staticmethod
