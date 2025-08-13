@@ -108,17 +108,3 @@ class EndpointConfig(BaseModel):
 
         except Exception as e:
             raise ValueError(f"[EndpointConfig] Unexpected error loading configuration: {e}")
-
-
-if __name__ == '__main__':
-
-    cfg = EndpointConfig()
-    template_ = cfg.load_template(path="../../src/data/payload_example_1.yaml")
-    print(f"payload without variables:\n{template_}")
-
-    cfg.variables = {"user_message": "Hello, world!"}
-    payload = cfg.payload
-    print(f"payload with variables:\n{payload}")
-
-    print(f"Configuration dump:\n{cfg.model_dump()}")
-
