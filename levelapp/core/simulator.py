@@ -12,14 +12,15 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Dict, Any, List
 
-from .base import BaseDatastore, BaseEvaluator
+from .base import BaseDatastore
+from .evaluator import InteractionEvaluator
 from ..simulator.schemas import (
-    InteractionEvaluationResult,
+    InteractionEvaluationResults,
     EndpointConfig, ScriptsBatch, ConversationScript, SimulationResults
 )
 from ..simulator.utils import (
     extract_interaction_details,
-    async_vla_request,
+    async_interaction_request,
     calculate_average_scores,
     summarize_verdicts,
 )
@@ -31,7 +32,7 @@ class ConversationSimulator:
     def __init__(
         self,
         storage_service: BaseDatastore,
-        evaluation_service: BaseEvaluator,
+        evaluation_service: InteractionEvaluator,
         endpoint_configuration: EndpointConfig,
     ):
         """
@@ -135,7 +136,7 @@ class ConversationSimulator:
 
         aggregate_scores: Dict[str, List[float]] = defaultdict(list)
         for result in results:
-            for key, value in result.get("averageScores", {}).items():
+            for key, value in result.get("average_scores", {}).items():
                 if isinstance(value, (int, float)):
                     aggregate_scores[key].append(value)
 
@@ -146,7 +147,7 @@ class ConversationSimulator:
                 verdicts=verdicts, judge=judge
             )
 
-        return {"scenarios": results, "averageScores": overall_average_scores}
+        return {"scripts": results, "average_scores": overall_average_scores}
 
     async def simulate_single_scenario(
         self, script: ConversationScript, attempts: int = 1
@@ -177,7 +178,6 @@ class ConversationSimulator:
 
             initial_interaction_results = await self.simulate_interactions(
                 script=script,
-                conversation_id=script.id,
                 evaluation_verdicts=collected_verdicts,
                 collected_scores=collected_scores,
             )
@@ -199,7 +199,7 @@ class ConversationSimulator:
 
             return {
                 "attempt": attempt_number + 1,
-                "conversation_id": script.id,
+                "script_id": script.id,
                 "total_duration": elapsed_time,
                 "interaction_results": initial_interaction_results,
                 "evaluation_verdicts": collected_verdicts,
@@ -219,15 +219,14 @@ class ConversationSimulator:
         )
 
         return {
-            "scenarioId": script.id,
+            "script_id": script.id,
             "attempts": attempt_results,
-            "averageScores": average_scores,
+            "average_scores": average_scores,
         }
 
     async def simulate_interactions(
         self,
         script: ConversationScript,
-        conversation_id: UUID,
         evaluation_verdicts: Dict[str, List[str]],
         collected_scores: Dict[str, List[Any]],
     ) -> List[Dict[str, Any]]:
@@ -236,7 +235,6 @@ class ConversationSimulator:
 
         Args:
             script (ConversationScript): The script to simulate.
-            conversation_id (UUID): The conversation ID.
             evaluation_verdicts(Dict[str, List[str]]): evaluation verdict for each evaluator.
             collected_scores(Dict[str, List[Any]]): collected scores for each target.
 
@@ -252,13 +250,13 @@ class ConversationSimulator:
         interactions = script.interactions
 
         for interaction in interactions:
-            interaction.id = conversation_id
             user_message = interaction.user_message
 
             # TODO-3: Add payload prep here.
-            payload = json.loads(interaction.model_dump_json())
+            self.api_configuration.payload_template['prompt'] = user_message
+            payload = self.api_configuration.payload_template
 
-            response = await async_vla_request(
+            response = await async_interaction_request(
                 url=self._endpoint,
                 headers=self._headers,
                 # TODO-4: Adjust the payload dump that needs to be passed for the request.
@@ -337,7 +335,7 @@ class ConversationSimulator:
         reference_metadata: Dict[str, Any],
         generated_guardrail: bool,
         reference_guardrail: bool,
-    ) -> InteractionEvaluationResult:
+    ) -> InteractionEvaluationResults:
         """
         Evaluate an interaction using OpenAI and Ionos evaluation services.
 
@@ -350,39 +348,44 @@ class ConversationSimulator:
             reference_guardrail (bool): reference handoff/guardrail flag.
 
         Returns:
-            InteractionEvaluationResult: The evaluation results.
+            InteractionEvaluationResults: The evaluation results.
         """
-        openai_eval_task = self.evaluation_service.evaluate(
+        openai_eval_task = self.evaluation_service.async_evaluate(
             provider="openai",
             generated_text=generated_reply,
             reference_text=reference_reply,
         )
 
-        ionos_eval_task = self.evaluation_service.evaluate(
+        ionos_eval_task = self.evaluation_service.async_evaluate(
             provider="ionos",
             generated_text=generated_reply,
             reference_text=reference_reply,
         )
 
-        openai_reply_evaluation, ionos_reply_evaluation = await asyncio.gather(
+        openai_judge_evaluation, ionos_judge_evaluation = await asyncio.gather(
             openai_eval_task, ionos_eval_task
         )
 
-        extracted_metadata_evaluation = evaluate_metadata(
-            expected=reference_metadata,
-            actual=generated_metadata,
-        )
+        # extracted_metadata_evaluation = evaluate_metadata(
+        #     expected=reference_metadata,
+        #     actual=generated_metadata,
+        # )
+
+        extracted_metadata_evaluation = 0.0
 
         guardrail_flag = 1 if generated_guardrail == reference_guardrail else 0
 
-        return InteractionEvaluationResult(
-            evaluations={"openai": openai_reply_evaluation, "ionos": ionos_reply_evaluation},
+        return InteractionEvaluationResults(
+            evaluations={
+                openai_judge_evaluation.provider: openai_judge_evaluation,
+                ionos_judge_evaluation.provider: ionos_judge_evaluation
+            },
             extracted_metadata_evaluation=extracted_metadata_evaluation,
         )
 
     @staticmethod
     def store_evaluation_results(
-        results: InteractionEvaluationResult,
+        results: InteractionEvaluationResults,
         evaluation_verdicts: Dict[str, List[str]],
         collected_scores: Dict[str, List[Any]],
     ) -> None:
@@ -390,18 +393,19 @@ class ConversationSimulator:
         Store the evaluation results in the evaluation summary.
 
         Args:
-            results (InteractionEvaluationResult): The evaluation results to store.
+            results (InteractionEvaluationResults): The evaluation results to store.
             evaluation_verdicts (Dict[str, List[str]]): The evaluation summary.
             collected_scores (Dict[str, List[Any]]): The collected scores.
         """
+        # TODO-7: I don't like this. Figure out a proper way to access the verdicts.
         evaluation_verdicts["openaiJustificationSummary"].append(
-            results.openaiReplyEvaluation.justification
+            results.evaluations.get("openai", "").justification
         )
         evaluation_verdicts["ionosJustificationSummary"].append(
-            results.ionosReplyEvaluation.justification
+            results.evaluations.get("ionos", "").justification
         )
 
-        collected_scores["openai"].append(results.openaiReplyEvaluation.match_level)
-        collected_scores["ionos"].append(results.ionosReplyEvaluation.match_level)
-        collected_scores["metadata"].append(results.extractedMetadataEvaluation)
-        collected_scores["guardrail"].append(results.guardrailFlag)
+        collected_scores["openai"].append(results.evaluations.get("openai", "").match_level)
+        collected_scores["ionos"].append(results.evaluations.get("ionos", "").match_level)
+        collected_scores["metadata"].append(0)
+        collected_scores["guardrail"].append(0)

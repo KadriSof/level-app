@@ -39,8 +39,12 @@ def extract_interaction_details(
         InteractionResults: The extracted interaction details.
     """
     try:
-        data = json.loads(response_text)
-        payload = data.get("payload", {})
+        payload = {
+            "generated_reply": response_text,
+            "generated_metadata": {},
+            "guardrail_details": {},
+            "interaction_type": ""
+        }
 
         return InteractionResults(
             generated_reply=payload.get("generated_reply", ""),
@@ -68,7 +72,7 @@ def extract_interaction_details(
         )
 
 
-async def async_vla_request(
+async def async_interaction_request(
         url: str,
         headers: Dict[str, str],
         payload: Dict[str, Any],

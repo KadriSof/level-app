@@ -11,6 +11,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, HttpUrl, SecretStr, Field, computed_field
 
+from levelapp.core.evaluator import JudgeEvaluationResults
+
 
 class InteractionLevel(str, Enum):
     """Enum representing the type of interaction."""
@@ -57,6 +59,7 @@ class ScriptsBatch(BaseModel):
 class EndpointConfig(BaseModel):
     url: HttpUrl
     api_key: SecretStr
+    model_id: str | None
     payload_template: Dict[str, Any] | None
 
     @property
@@ -64,11 +67,12 @@ class EndpointConfig(BaseModel):
         return {
             "x-api-key": self.api_key.get_secret_value(),
             "Content-Type": "application/json",
+            "x-model-id": self.model_id
         }
 
     @property
     def full_url(self) -> str:
-        return f"{self.url}/api/conversations/events"
+        return str(self.url)
 
 
 class InteractionResults(BaseModel):
@@ -80,9 +84,9 @@ class InteractionResults(BaseModel):
     interaction_type: str | None = ""
 
 
-class InteractionEvaluationResult(BaseModel):
+class InteractionEvaluationResults(BaseModel):
     """Model representing the evaluation result of an interaction."""
-    evaluations: Dict[str, Any]
+    evaluations: Dict[str, JudgeEvaluationResults]
     extracted_metadata_evaluation: float
 
 
