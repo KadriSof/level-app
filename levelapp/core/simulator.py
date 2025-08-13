@@ -87,6 +87,7 @@ class ConversationSimulator:
             average_scores=results.get("average_scores", {}),
         )
 
+
         # batch_details.started_at = started_at
         # batch_details.finished_at = finished_at
         # batch_details.evaluation_summary = self.verdict_summaries
@@ -175,7 +176,7 @@ class ConversationSimulator:
             collected_scores: Dict[str, List[Any]] = defaultdict(list)
             collected_verdicts: Dict[str, List[str]] = defaultdict(list)
             # TODO-2: Remove the 'conversation_id' from 'simulate_interactions' signature.
-
+            
             initial_interaction_results = await self.simulate_interactions(
                 script=script,
                 evaluation_verdicts=collected_verdicts,
@@ -253,8 +254,10 @@ class ConversationSimulator:
             user_message = interaction.user_message
 
             # TODO-3: Add payload prep here.
+
             self.api_configuration.payload_template['prompt'] = user_message
             payload = self.api_configuration.payload_template
+
 
             response = await async_interaction_request(
                 url=self._endpoint,
