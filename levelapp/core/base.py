@@ -233,3 +233,33 @@ class BaseDatastore(ABC):
             data (Dict[str, Any]): Batch result data to store.
         """
         pass
+
+
+class BaseWorkflow(ABC):
+    """Abstract base class for evaluation workflows."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.config: Dict[str, Any] = {}
+        self.data: Any = None
+        self.results: Any = None
+
+    @abstractmethod
+    def setup(self, config: Dict[str, Any]) -> None:
+        """Validate and initialize workflow-specific settings."""
+        ...
+
+    @abstractmethod
+    def load_data(self, data_loader: Any) -> None:
+        """Load and preprocess input data."""
+        ...
+
+    @abstractmethod
+    def execute(self) -> None:
+        """Run the workflow evaluation steps."""
+        ...
+
+    @abstractmethod
+    def collect_results(self) -> Any:
+        """Return unified results structure."""
+        ...
