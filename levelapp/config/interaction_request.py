@@ -52,7 +52,8 @@ class EndpointConfig(BaseModel):
         self.load_template()
         if not self.variables:
             # Case 1: Already complete payload
-            raise ValueError("[EndpointConfig] No variables defined to populate the payload template")
+            # raise ValueError("[EndpointConfig] No variables defined to populate the payload template")
+            pass
         # Case 2: Template substitution
         return self._replace_placeholders(self.payload_template, self.variables)
 
@@ -76,6 +77,7 @@ class EndpointConfig(BaseModel):
 
         return _replace(obj)
 
+    # TODO-0: Use 'Path' for path configuration.
     def load_template(self, path: str | None = None) -> Dict[str, Any]:
         try:
             if not path:
@@ -95,7 +97,7 @@ class EndpointConfig(BaseModel):
                     raise ValueError("[EndpointConfig] Unsupported file format.")
 
                 self.payload_template = data
-                # TODO-0: Remove the return statement if not required.
+                # TODO-1: Remove the return statement if not required.
                 return data
 
         except FileNotFoundError as e:
