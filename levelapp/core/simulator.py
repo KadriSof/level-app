@@ -43,10 +43,11 @@ class ConversationSimulator(BaseSimulator):
             evaluation_service (EvaluationService): Service for evaluating interactions.
             endpoint_configuration (EndpointConfig): Configuration object for VLA.
         """
-        self.evaluation_service = evaluation_service
-        self.storage_service = storage_service
-        self.endpoint_configuration = endpoint_configuration
         self.logger = logging.getLogger(__name__)
+
+        self.storage_service = storage_service
+        self.evaluation_service = evaluation_service
+        self.endpoint_configuration = endpoint_configuration
 
         self._url = endpoint_configuration.full_url
         self._credentials = endpoint_configuration.api_key.get_secret_value()
@@ -56,10 +57,15 @@ class ConversationSimulator(BaseSimulator):
         self.evaluation_verdicts: Dict[str, List[str]] = defaultdict(list)
         self.verdict_summaries: Dict[str, List[str]] = defaultdict(list)
 
-    def simulate(self):
+    def simulate(self, **kwargs):
         """Entry point."""
         # TODO-0: Add entry point logic here.
-        pass
+        asyncio.run(
+            self.run_batch_test(
+                test_batch=kwargs.get("test_batch"),
+                attempts=kwargs.get("attempts", 1)
+            )
+        )
 
     async def run_batch_test(
         self,

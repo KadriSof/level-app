@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class BaseSimulator(ABC):
     """Abstract base class for simulator components."""
     @abstractmethod
-    def simulate(self):
+    def simulate(self, **kwargs):
         """Run a stress test simulation based on the provided configuration."""
         raise NotImplementedError
 
@@ -250,12 +250,12 @@ class BaseWorkflow(ABC):
         ...
 
     @abstractmethod
-    def load_data(self, data_loader: Any) -> None:
+    def load_data(self, config: Dict[str, Any]) -> None:
         """Load and preprocess input data."""
         ...
 
     @abstractmethod
-    def execute(self) -> None:
+    def execute(self, config: Dict[str, Any]) -> None:
         """Run the workflow evaluation steps."""
         ...
 

@@ -9,7 +9,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Dict, List, Any
 
-from levelapp.utils.monitoring import FunctionMonitor, MetricType, ExecutionMetrics
+from levelapp.core.base import BaseWorkflow
+from levelapp.core.workflow import SimulatorWorkflow
+from levelapp.utils.monitoring import FunctionMonitor, MetricType, ExecutionMetrics, MonitoringAspect
 
 logger = logging.getLogger(__name__)
 
@@ -120,9 +122,24 @@ class StepContext:
 
 class EvaluationSession:
     """Context manager for LLM evaluation sessions with integrated monitoring."""
-    def __init__(self, session_name: str, monitor: FunctionMonitor | None = None):
+    def __init__(
+            self,
+            session_name: str = "test-session",
+            monitor: FunctionMonitor | None = None,
+            workflow: BaseWorkflow | None = None
+    ):
+        """
+        Initialize Evaluation Session.
+
+        Args:
+            session_name (str): Name of the session
+            monitor (FunctionMonitor): Function monitoring aspect
+            workflow (BaseWorkflow): Selected workflow.
+        """
         self.session_name = session_name
-        self.monitor = monitor or FunctionMonitor()
+        self.monitor = monitor or MonitoringAspect
+        self.workflow = workflow or SimulatorWorkflow()
+
         self.session_metadata = SessionMetadata(session_name=session_name)
         self._lock = threading.RLock()
 
@@ -148,6 +165,20 @@ class EvaluationSession:
     def step(self, step_name: str, category: MetricType = MetricType.CUSTOM) -> StepContext:
         """Create a monitored evaluation step."""
         return StepContext(self, step_name, category)
+
+    def run(self, config: Dict[str, Any]):
+        with self.step(step_name="setup", category=MetricType.SETUP):
+            print("Entered step 'setup'")
+            self.workflow.setup(config=config)
+
+        with self.step(step_name="load_data", category=MetricType.DATA_LOADING):
+            self.workflow.load_data(config=config)
+
+        with self.step(step_name="execute", category=MetricType.EXECUTION):
+            self.workflow.execute(config=config)
+
+        with self.step(step_name=f"{self.session_name}.collect_results", category=MetricType.RESULTS_COLLECTION):
+            self.workflow.collect_results()
 
     def get_stats(self) -> Dict[str, Any]:
         return {
