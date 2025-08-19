@@ -22,6 +22,11 @@ T = TypeVar('T')
 
 class MetricType(Enum):
     """Types of metrics that can be collected."""
+    SETUP = "setup"
+    DATA_LOADING = "data_loading"
+    EXECUTION = "execution"
+    RESULTS_COLLECTION = "results_collection"
+
     API_CALL = "api_call"
     SCORING = "scoring"
     CUSTOM = "custom"
@@ -259,26 +264,40 @@ class FunctionMonitor:
             hashable_kwargs = tuple(sorted((k, _make_hashable(v)) for k, v in kwargs.items()))
             return hashable_args, hashable_kwargs
 
+        cache = {}
+        cache_info = {"hits": 0, "misses": 0}
+
         @wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            # Build a hashable cache key without altering the original args
+            nonlocal cache_info
             cache_key = make_args_hashable(args, kwargs)
 
-            if not hasattr(wrapper, "_cache"):
-                wrapper._cache = {}
-                wrapper._cache_info = {"hits": 0, "misses": 0}
+            if cache_key in cache:
+                cache_info["hits"] += 1
+                return cache[cache_key]
 
-            if cache_key in wrapper._cache:
-                wrapper._cache_info["hits"] += 1
-                return wrapper._cache[cache_key]
+            cache_info["misses"] += 1
+            result = func(*args, **kwargs)
+            cache[cache_key] = result
 
-            wrapper._cache_info["misses"] += 1
-            result = func(*args, **kwargs)  # pass ORIGINAL args
-            wrapper._cache[cache_key] = result
+            # Enforce maxsize
+            if len(cache) > maxsize:
+                cache.pop(next(iter(cache)))
             return result
 
-        wrapper.cache_info = wrapper._cache_info
-        wrapper.cache_clear = wrapper._cache.clear()
+        # Add cache management methods
+        def get_cache_info():
+            return dict(cache_info)
+
+        def clear_cache():
+            nonlocal cache, cache_info
+            cache.clear()
+            cache_info = {"hits": 0, "misses": 0}
+
+        wrapper.cache_info = get_cache_info
+        wrapper.cache_clear = clear_cache
+        wrapper._cache = cache  # For debugging/inspection
+
         return wrapper
 
     def _wrap_execution(
