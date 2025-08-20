@@ -42,6 +42,7 @@ class ExecutionMetrics:
     start_time: datetime | None = None
     end_time: datetime | None = None
     duration: float | None = None
+    total_api_calls: int = 0
     memory_before: int | None = None
     memory_after: int | None = None
     memory_peak: int | None = None
@@ -76,19 +77,19 @@ class AggregatedStats:
     """Aggregated metrics for monitored functions."""
     total_calls: int = 0
     total_duration: float = 0.0
-    min_duration: float = float('inf')
+    min_duration: float = 0.0
     max_duration: float = 0.0
     error_count: int = 0
     cache_hits: int = 0
     memory_peak: int = 0
-    last_called: datetime | None = None
+    recent_call: datetime | None = None
 
     def update(self, metrics: ExecutionMetrics) -> None:
         """Update aggregated metrics with new execution metrics."""
-        self.total_calls += 1
-        self.last_called = datetime.now()
+        self.recent_call = datetime.now()
 
-        if metrics.duration is not None:
+        if metrics.duration:
+            self.total_calls += 1
             self.total_duration += metrics.duration
             self.min_duration = min(self.min_duration, metrics.duration)
             self.max_duration = max(self.max_duration, metrics.duration)
@@ -121,11 +122,12 @@ class AggregatedStats:
 @runtime_checkable
 class MetricsCollector(Protocol):
     """Protocol for custom metrics collectors."""
-    def collect_before(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+
+    def collect_before(self, collected_metrics: ExecutionMetrics) -> ExecutionMetrics:
         """Collect metrics before function execution."""
         ...
 
-    def collect_after(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def collect_after(self, collected_metrics: ExecutionMetrics) -> ExecutionMetrics:
         """Collect metrics after function execution."""
         ...
 
@@ -133,24 +135,27 @@ class MetricsCollector(Protocol):
 class MemoryTracker(MetricsCollector):
     """Memory usage metrics collector."""
     def __init__(self):
+        self.collect_metrics: ExecutionMetrics | None = None
         self._tracking = False
 
-    def collect_before(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def collect_before(self, collected_metrics: ExecutionMetrics) -> ExecutionMetrics:
         if not self._tracking:
             tracemalloc.start()
             self._tracking = True
 
         current, peak = tracemalloc.get_traced_memory()
-        return {"memory_before": current / 10**6, "memory_peak": peak / 10**6}
+        collected_metrics.memory_before = current
+        collected_metrics.memory_after = peak
+        return collected_metrics
 
-    def collect_after(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def collect_after(self, collected_metrics: ExecutionMetrics) -> ExecutionMetrics:
         if self._tracking:
             current, peak = tracemalloc.get_traced_memory()
-            return {
-                "memory_after": current / 10**6,
-                "memory_peak": peak / 10**6,
-            }
-        return {}
+            collected_metrics.memory_before = current / 10 ** 6
+            collected_metrics.memory_after = peak / 10 ** 6
+            return collected_metrics
+
+        return collected_metrics
 
     def __del__(self):
         if self._tracking:
@@ -164,20 +169,15 @@ class APICallTracker(MetricsCollector):
         self._api_calls = defaultdict(int)
         self._lock = threading.Lock()
 
-    def collect_before(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        return {"api_calls_history": dict(self._api_calls)}
+    def collect_before(self, collected_metrics: ExecutionMetrics) -> ExecutionMetrics:
+        return collected_metrics
 
-    def collect_after(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def collect_after(self, collected_metrics: ExecutionMetrics) -> ExecutionMetrics:
         with self._lock:
-            api_calls = 0
-            if metadata['category'] == MetricType.API_CALL:
-                api_calls += 1
+            if collected_metrics.category == MetricType.API_CALL:
+                collected_metrics.total_api_calls += 1
 
-            if api_calls > 0:
-                func_name = metadata.get('procedure', 'unknown')
-                self._api_calls[func_name] += api_calls
-
-        return {"api_calls_detected": api_calls, "total_api_calls": dict(self._api_calls)}
+        return collected_metrics
 
 
 class FunctionMonitor:
@@ -230,27 +230,29 @@ class FunctionMonitor:
             if collector in self._collectors:
                 self._collectors.remove(collector)
 
-    def _collect_metrics_before(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def _collect_metrics_before(self, execution_metrics: ExecutionMetrics) -> Dict[str, ExecutionMetrics]:
         """
         Collect metrics before function execution using registered collectors.
         """
-        metrics = {}
+        metrics = defaultdict(ExecutionMetrics)
         for collector in self._collectors:
             try:
-                metrics.update(collector.collect_before(metadata=metadata))
+                collected_before = collector.collect_before(collected_metrics=execution_metrics)
+                metrics.update({collector.__class__.__name__: collected_before})
             except Exception as e:
                 logger.warning(f"[FunctionMonitor] Metrics collector failed: {e}")
 
         return metrics
 
-    def _collect_metrics_after(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def _collect_metrics_after(self, execution_metrics: ExecutionMetrics) -> Dict[str, ExecutionMetrics]:
         """
         Collect metrics after function execution using registered collectors.
         """
         metrics = {}
         for collector in self._collectors:
             try:
-                metrics.update(collector.collect_after(metadata=metadata))
+                collected_after = collector.collect_after(collected_metrics=execution_metrics)
+                metrics.update({collector.__class__.__name__: collected_after})
             except Exception as e:
                 logger.warning(f"[FunctionMonitor] Metrics collector failed: {e}")
 
@@ -338,25 +340,19 @@ class FunctionMonitor:
 
             # Collect pre-execution metrics
             if track_memory and self._collectors:
-                # TODO-0: I don't like this, but it works for now.
-                pre_metrics = self._collect_metrics_before(metadata=exec_metadata)
-                metrics.memory_before = pre_metrics.get('memory_before')
-
-
+                self._collect_metrics_before(execution_metrics=metrics)
 
             try:
                 result = func(*args, **kwargs)
 
-                # Check for cache hit
-                cache_hit_info = getattr(func, 'cache_hit_info', None)
-                if hasattr(func, 'cache_info') and cache_hit_info is not None:
-                    metrics.cache_hit = getattr(cache_hit_info, 'is_hit', False)
-
                 # Collect post-execution metrics
                 if track_memory and self._collectors:
-                    post_metrics = self._collect_metrics_after(metadata=exec_metadata)
-                    metrics.memory_after = post_metrics.get('memory_after')
-                    metrics.memory_peak = post_metrics.get('memory_peak')
+                    # Check for cache hit
+                    cache_hit_info = getattr(func, 'cache_hit_info', None)
+                    if hasattr(func, 'cache_info') and cache_hit_info is not None:
+                        metrics.cache_hit = getattr(cache_hit_info, 'is_hit', False)
+
+                    self._collect_metrics_after(execution_metrics=metrics)
 
                 return result
 
@@ -466,14 +462,26 @@ class FunctionMonitor:
             return {
                 'name': name,
                 'total_calls': stats.total_calls,
-                'avg_duration': precisedelta(timedelta(stats.average_duration)),
-                'min_duration': precisedelta(timedelta(stats.min_duration)),
-                'max_duration': precisedelta(timedelta(stats.max_duration)),
+                'avg_duration': precisedelta(
+                    timedelta(seconds=stats.average_duration),
+                    suppress=['minutes'],
+                    format='%.3f'
+                ),
+                'min_duration': precisedelta(
+                    timedelta(seconds=stats.min_duration),
+                    suppress=['minutes'],
+                    format='%.3f'
+                ),
+                'max_duration': precisedelta(
+                    timedelta(seconds=stats.max_duration),
+                    suppress=['minutes'],
+                    format='%.3f'
+                ),
                 'error_rate': stats.error_rate,
-                'cache_hit_rate': stats.cache_hit_rate if hasattr(func, 'cache_info') else None,
-                'memory_peak_mb': naturalsize(stats.memory_peak or 0),
-                'last_called': stats.last_called.isoformat() if stats.last_called else None,
-                'recent_executions': len(history),
+                'cache_hit_rate': stats.cache_hit_rate,
+                'memory_peak_mb': naturalsize(stats.memory_peak),
+                'last_called': stats.recent_call.isoformat(),
+                'recent_execution': stats.recent_call.isoformat(),
                 'is_cached': hasattr(func, 'cache_info'),
                 'cache_info': func.cache_info() if hasattr(func, 'cache_info') else None
             }
