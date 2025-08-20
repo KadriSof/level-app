@@ -32,9 +32,6 @@ def load_json_file(
     try:
         content = file_path.read_text(encoding="utf-8")
         data = json.loads(content)
-        print(f"data type: {type(data)}")
-        print(f"data content:\n{content}")
-        # TODO-0: Find a way to load the right values in the data (Keep data['scripts'] for now).
         return model.model_validate(data)
 
     except FileNotFoundError as e:

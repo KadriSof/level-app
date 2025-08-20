@@ -35,14 +35,14 @@ class SimulatorWorkflow(BaseWorkflow):
             print(f"[SimulatorWorkflow] configuration:\n{self.config}")
         self.simulator = ConversationSimulator(**self.config)
 
-    def load_data(self, config: dict) -> None:
+    def load_data(self, config: Dict[str, Any]) -> None:
         file_path = Path(config.get("file_path", "no-file-path"))
         if not file_path.exists():
             raise FileNotFoundError(f"No file path was provide (default value: {file_path})")
 
         self.data = load_json_file(model=ScriptsBatch, file_path=file_path)
 
-    def execute(self, config: dict) -> None:
+    def execute(self, config: Dict[str, Any]) -> None:
         if not (self.simulator and self.data):
             raise RuntimeError("[SimulatorWorkflow] Workflow not properly initialized.")
         config["test_batch"] = self.data
@@ -67,7 +67,7 @@ class ComparatorWorkflow(BaseWorkflow):
     def load_data(self, config: Any) -> None:
         self.data = config.load()
 
-    def execute(self) -> None:
+    def execute(self, config: dict) -> None:
         if not (self.comparator and self.data):
             raise RuntimeError("[ComparatorWorkflow] Workflow not properly initialized.")
         self.results = self.comparator.compare()
