@@ -1,17 +1,19 @@
 """levelapp/utils.monitoring.py"""
+import time
 import logging
 import threading
-import time
 import tracemalloc
-from collections import defaultdict
 
 from enum import Enum
+from collections import defaultdict
 from dataclasses import dataclass, fields
 from typing import List, Dict, Callable, Any, Union, ParamSpec, TypeVar, runtime_checkable, Protocol, Type
 
-from datetime import datetime
 from threading import RLock
-from functools import lru_cache, wraps
+from functools import wraps
+from datetime import datetime, timedelta
+from humanize import precisedelta, naturalsize
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,8 +39,8 @@ class ExecutionMetrics:
     """Comprehensive metrics for a function execution."""
     procedure: str
     category: MetricType = MetricType.CUSTOM
-    start_time: float | None = None
-    end_time: float | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
     duration: float | None = None
     memory_before: int | None = None
     memory_after: int | None = None
@@ -49,7 +51,7 @@ class ExecutionMetrics:
     def finalize(self) -> None:
         """Finalize metrics calculation."""
         if self.end_time and self.start_time:
-            self.duration = self.end_time - self.start_time
+            self.duration = (self.end_time - self.start_time).total_seconds()
 
     def update_duration(self, value: float) -> None:
         self.duration = value
@@ -331,14 +333,16 @@ class FunctionMonitor:
                 category=category,
             )
 
+            if enable_timing:
+                metrics.start_time = datetime.now()
+
             # Collect pre-execution metrics
             if track_memory and self._collectors:
                 # TODO-0: I don't like this, but it works for now.
                 pre_metrics = self._collect_metrics_before(metadata=exec_metadata)
                 metrics.memory_before = pre_metrics.get('memory_before')
 
-            if enable_timing:
-                metrics.start_time = time.perf_counter()
+
 
             try:
                 result = func(*args, **kwargs)
@@ -362,7 +366,7 @@ class FunctionMonitor:
                 raise
 
             finally:
-                metrics.end_time = time.perf_counter()
+                metrics.end_time = datetime.now()
                 metrics.finalize()
 
                 # store metrics
@@ -462,12 +466,12 @@ class FunctionMonitor:
             return {
                 'name': name,
                 'total_calls': stats.total_calls,
-                'avg_duration': stats.average_duration,
-                'min_duration': stats.min_duration if stats.min_duration != float('inf') else 0,
-                'max_duration': stats.max_duration,
+                'avg_duration': precisedelta(timedelta(stats.average_duration)),
+                'min_duration': precisedelta(timedelta(stats.min_duration)),
+                'max_duration': precisedelta(timedelta(stats.max_duration)),
                 'error_rate': stats.error_rate,
                 'cache_hit_rate': stats.cache_hit_rate if hasattr(func, 'cache_info') else None,
-                'memory_peak_mb': stats.memory_peak / 1024 / 1024 if stats.memory_peak else 0,
+                'memory_peak_mb': naturalsize(stats.memory_peak or 0),
                 'last_called': stats.last_called.isoformat() if stats.last_called else None,
                 'recent_executions': len(history),
                 'is_cached': hasattr(func, 'cache_info'),
@@ -543,111 +547,6 @@ class FunctionMonitor:
 
 
 MonitoringAspect = FunctionMonitor()
-
-
-# Global monitoring functions for backward compatibility.
-def monitor(name: str, **kwargs) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    """
-    Decorator to monitor function execution with global FunctionMonitor.
-
-    Args:
-        name: Unique identifier for the function
-        **kwargs: Additional parameters for FunctionMonitor
-
-    Returns:
-        Callable[[Callable[P, T]], Callable[P, T]]: Decorator function
-    """
-    return MonitoringAspect.monitor(name=name, **kwargs)
-
-
-def get_stats(name: str) -> Dict[str, Any] | None:
-    """
-    Get statistics for a monitored function.
-
-    Args:
-        name (str): Name of the monitored function.
-
-    Returns:
-        Dict[str, Any] | None: Function statistics or None if not found.
-    """
-    return MonitoringAspect.get_stats(name=name)
-
-
-def list_monitored_functions() -> Dict[str, Callable[..., Any]]:
-    """
-    List all monitored functions.
-
-    Returns:
-        Dict[str, Callable[..., Any]]: Dictionary of monitored function names and their callable objects.
-    """
-    return MonitoringAspect.list_monitored_functions()
-
-
-def clear_history(procedure: str | None = None) -> None:
-    """
-    Clear execution history.
-
-    Args:
-        procedure (str | None): Name of the function to clear history for.
-    """
-    return MonitoringAspect.clear_history(procedure=procedure)
-
-
-def export_metrics(output_format: str = 'dict') -> Union[Dict[str, Any], str]:
-    """
-    Export all metrics.
-
-    Args:
-        output_format (str): Format for exporting metrics ('dict' or 'json').
-
-    Returns:
-        Union[Dict[str, Any], str]: Exported metrics in the specified format.
-    """
-    return MonitoringAspect.export_metrics(output_format)
-
-
-# Convenience decorators
-def monitor_with_cache(name: str, maxsize: int = 128, **kwargs) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    """
-    Monitor with caching enabled.
-
-    Args:
-        name (str): Unique identifier for the function.
-        maxsize (int): Maximum size of the cache.
-        **kwargs: Additional parameters for FunctionMonitor.
-
-    Returns:
-        Callable[[Callable[P, T]], Callable[P, T]]: Decorator function with caching enabled.
-    """
-    return monitor(name, cached=True, maxsize=maxsize, **kwargs)
-
-
-def monitor_memory(name: str, **kwargs) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    """
-    Monitor with memory tracking.
-
-    Args:
-        name (str): Unique identifier for the function.
-        **kwargs: Additional parameters for FunctionMonitor.
-
-    Returns:
-        Callable[[Callable[P, T]], Callable[P, T]]: Decorator function with memory
-    """
-    return monitor(name, track_memory=True, **kwargs)
-
-
-def monitor_api_calls(name: str, **kwargs) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    """
-    Monitor API calls (includes API call tracker by default).
-
-    Args:
-        name (str): Unique identifier for the function.
-        **kwargs: Additional parameters for FunctionMonitor.
-
-    Returns:
-        Callable[[Callable[P, T]], Callable[P, T]]: Decorator function with API call tracking.
-    """
-    return monitor(name, track_memory=True, enable_timing=True, **kwargs)
 
 
 def _make_hashable(obj):
