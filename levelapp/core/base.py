@@ -188,8 +188,9 @@ class BaseRepository(ABC):
     @abstractmethod
     def retrieve_document(
             self,
-            user_id: str,
             collection_id: str,
+            section_id: str,
+            sub_collection_id: str,
             document_id: str,
             model_type: Type[Model]
     ) -> Model | None:
@@ -197,9 +198,10 @@ class BaseRepository(ABC):
         Retrieve and parse a document from the datastore based on its type.
 
         Args:
-            user_id (str): ID of the user.
-            collection_id (str): Name of the collection.
-            document_id (str): ID of the document to retrieve.
+            collection_id (str): Collection reference.
+            section_id (str): Section reference.
+            sub_collection_id (str): Sub-collection reference.
+            document_id (str): Reference of the document to retrieve.
             model_type (Type[BaseModel]): Pydantic class to instantiate.
 
         Returns:
@@ -210,8 +212,9 @@ class BaseRepository(ABC):
     @abstractmethod
     def store_document(
             self,
-            user_id: str,
             collection_id: str,
+            section_id: str,
+            sub_collection_id: str,
             document_id: str,
             data: Model
     ) -> None:
@@ -219,9 +222,10 @@ class BaseRepository(ABC):
         Store a pydantic model instance as a document.
 
         Args:
-            user_id (str): ID of the user.
-            collection_id (str): Name of the collection.
-            document_id (str): ID of the document to store.
+            collection_id (str): Collection reference.
+            section_id (str): Section reference.
+            sub_collection_id (str): Sub-collection reference.
+            document_id (str): Reference of the document to store.
             data (Model): Pydantic model instance.
         """
         raise NotImplementedError
@@ -229,8 +233,9 @@ class BaseRepository(ABC):
     @abstractmethod
     def query_collection(
             self,
-            user_id: str,
             collection_id: str,
+            section_id: str,
+            sub_collection_id: str,
             filters: Dict[str, Any],
             model_type: Type[Model]
     ) -> List[Model]:
@@ -238,8 +243,9 @@ class BaseRepository(ABC):
         Query documents in a collection with optional filters.
 
         Args:
-            user_id (str): ID of the user.
-            collection_id (str): Name of the collection.
+            collection_id (str): Collection reference.
+            section_id (str): Section reference.
+            sub_collection_id (str): Sub-collection reference.
             filters (Dict[str, Any]): Filters to apply to the query (implementation dependent).
             model_type (Type[BaseModel]): Pydantic class to instantiate.
 
@@ -251,12 +257,19 @@ class BaseRepository(ABC):
     @abstractmethod
     def delete_document(
             self,
-            user_id: str,
             collection_id: str,
+            section_id: str,
+            sub_collection_id: str,
             document_id: str
     ) -> bool:
         """
         Delete a document.
+
+        Args:
+            collection_id (str): Collection reference.
+            section_id (str): Section reference.
+            sub_collection_id (str): Sub-collection reference.
+            document_id (str): Reference of the document to delete.
 
         Returns:
             True if deleted, False if not.

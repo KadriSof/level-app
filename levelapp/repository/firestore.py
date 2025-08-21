@@ -67,8 +67,9 @@ class FirestoreRepository(BaseRepository):
 
     def retrieve_document(
             self,
-            user_id: str,
             collection_id: str,
+            section_id: str,
+            sub_collection_id: str,
             document_id: str,
             model_type: Type[Model]
     ) -> Model | None:
@@ -76,9 +77,10 @@ class FirestoreRepository(BaseRepository):
         Retrieves a document from Firestore.
 
         Args:
-            user_id (str): User ID.
-            collection_id (str): Collection ID.
-            document_id (str): Document ID.
+            collection_id (str): User reference.
+            section_id (str): Section reference.
+            sub_collection_id (str): Collection reference.
+            document_id (str): Document reference.
             model_type (Type[Model]): Pydantic model for parsing.
 
         Returns:
@@ -89,7 +91,13 @@ class FirestoreRepository(BaseRepository):
             return None
 
         try:
-            doc_ref = self.client.collection(user_id, collection_id).document(document_id)
+            doc_ref = (
+                self.client
+                .collection(collection_id)
+                .document(section_id)
+                .collection(sub_collection_id)
+                .document(document_id)
+            )
             snapshot: DocumentSnapshot = doc_ref.get()
 
             if not snapshot.exists:
@@ -104,7 +112,7 @@ class FirestoreRepository(BaseRepository):
             return None
 
         except InvalidArgument as e:
-            logger.error(f"Invalid argument in document path <{user_id}/{collection_id}/{document_id}>:\n{e}")
+            logger.error(f"Invalid argument in document path <{sub_collection_id}/{sub_collection_id}/{document_id}>:\n{e}")
             return None
 
         except DeadlineExceeded as e:
@@ -121,8 +129,9 @@ class FirestoreRepository(BaseRepository):
 
     def store_document(
             self,
-            user_id: str,
             collection_id: str,
+            section_id: str,
+            sub_collection_id: str,
             document_id: str,
             data: Model
     ) -> None:
@@ -130,16 +139,23 @@ class FirestoreRepository(BaseRepository):
         Stores a document in Firestore.
 
         Args:
-            user_id (str): User ID.
-            collection_id (str): Collection ID.
-            document_id (str): Document ID.
+            collection_id (str): Collection reference.
+            section_id (str): Section reference.
+            sub_collection_id (str): Sub-collection reference.
+            document_id (str): Document reference.
             data (Model): An instance of the Pydantic model containing the data.
         """
         if not self.client:
             logger.error("Client connection lost")
 
         try:
-            doc_ref = self.client.collection(user_id, collection_id).document(document_id)
+            doc_ref = (
+                self.client
+                .collection(collection_id)
+                .document(section_id)
+                .collection(sub_collection_id)
+                .document(document_id)
+            )
             data = data.model_dump()
             doc_ref.set(data)
 
@@ -148,7 +164,7 @@ class FirestoreRepository(BaseRepository):
             return None
 
         except InvalidArgument as e:
-            logger.error(f"Invalid argument in document path <{user_id}/{collection_id}/{document_id}>:\n{e}")
+            logger.error(f"Invalid argument in document path <{sub_collection_id}/{sub_collection_id}/{document_id}>:\n{e}")
             return None
 
         except DeadlineExceeded as e:
@@ -165,8 +181,9 @@ class FirestoreRepository(BaseRepository):
 
     def query_collection(
             self,
-            user_id: str,
             collection_id: str,
+            section_id: str,
+            sub_collection_id: str,
             filters: Dict[str, Any],
             model_type: Type[Model]
     ) -> List[Model]:
@@ -174,10 +191,11 @@ class FirestoreRepository(BaseRepository):
         Queries a collection with specified filters.
 
         Args:
-            user_id: The ID of the user.
-            collection_id: The ID of the nested collection.
-            filters: A dictionary of key-value pairs to filter the query.
-            model_type: The class to deserialize the documents into.
+            collection_id (str): Collection reference.
+            section_id (str): Section reference.
+            sub_collection_id (str): Sub-collection reference.
+            filters (Dict[str, Any]): A dictionary of key-value pairs to filter the query.
+            model_type (Type[Model): The class to deserialize the documents into.
 
         Returns:
             A list of deserialized models that match the query.
@@ -187,7 +205,7 @@ class FirestoreRepository(BaseRepository):
             return []
 
         try:
-            collection_ref = self.client.collection(user_id, collection_id)
+            collection_ref = self.client.collection('users', collection_id, sub_collection_id)
             query = collection_ref
 
             for key, value in filters.items():
@@ -201,15 +219,15 @@ class FirestoreRepository(BaseRepository):
             return results
 
         except NotFound as e:
-            logger.warning(f"Collection for user '{user_id}' not found:\n{e}")
+            logger.warning(f"Collection for user '{collection_id}' not found:\n{e}")
             return []
 
         except InvalidArgument as e:
-            logger.error(f"Invalid query argument for user '{user_id}':\n{e}")
+            logger.error(f"Invalid query argument for user '{collection_id}':\n{e}")
             return []
 
         except DeadlineExceeded as e:
-            logger.error(f"Query for user '{user_id}' timed out:\n{e}")
+            logger.error(f"Query for user '{collection_id}' timed out:\n{e}")
             return []
 
         except ValidationError as e:
@@ -222,17 +240,19 @@ class FirestoreRepository(BaseRepository):
 
     def delete_document(
             self,
-            user_id: str,
             collection_id: str,
+            section_id: str,
+            sub_collection_id: str,
             document_id: str
     ) -> bool:
         """
         Deletes a document from Firestore.
 
         Args:
-            user_id: The ID of the user.
-            collection_id: The ID of the nested collection.
-            document_id: The ID of the document to delete.
+            collection_id (str): Collection reference.
+            section_id (str): Section reference.
+            sub_collection_id (str): Sub-collection reference.
+            document_id (str): Document reference.
 
         Returns:
             True if the document was deleted successfully, False otherwise.
@@ -242,7 +262,11 @@ class FirestoreRepository(BaseRepository):
             return False
 
         try:
-            doc_ref = self.client.collection(user_id, collection_id).document(document_id)
+            doc_ref = self.client.collection(
+                collection_id,
+                section_id,
+                sub_collection_id
+            ).document(document_id)
             doc_ref.delete()
             logger.info(f"Document '{document_id}' deleted successfully.")
             return True
@@ -251,7 +275,7 @@ class FirestoreRepository(BaseRepository):
             logger.warning(f"Failed to delete document. Document '{document_id}' not found:\n{e}")
             return False
         except InvalidArgument as e:
-            logger.error(f"Invalid argument in document path <{user_id}/{collection_id}/{document_id}>:\n{e}")
+            logger.error(f"Invalid argument in document path <{collection_id}/{sub_collection_id}/{document_id}>:\n{e}")
             return False
         except DeadlineExceeded as e:
             logger.error(f"Request to delete document <ID:{document_id}> timed out:\n{e}")
