@@ -8,9 +8,11 @@ import logging
 from abc import ABC, abstractmethod
 
 from pydantic import BaseModel
-from typing import Dict, Any, Callable
+from typing import List, Dict, Any, Callable, TypeVar, Type
 
 logger = logging.getLogger(__name__)
+
+Model = TypeVar("Model", bound=BaseModel)
 
 
 class BaseSimulator(ABC):
@@ -167,16 +169,30 @@ class BaseMetric(ABC):
         }
 
 
-class BaseDatastore(ABC):
-    """Abstract base class for data stores."""
+class BaseRepository(ABC):
+    """
+    Abstract base class for pluggable NoSQL data stores.
+    Supports document-based operations with Pydantic model parsing.
+    """
+
     @abstractmethod
-    def fetch_document(
+    def connect(self) -> None:
+        """Initialize connection or client."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close connection or client."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def retrieve_document(
             self,
             user_id: str,
             collection_id: str,
             document_id: str,
-            doc_type: str
-    ) -> BaseModel:
+            model_type: Type[Model]
+    ) -> Model | None:
         """
         Retrieve and parse a document from the datastore based on its type.
 
@@ -184,55 +200,68 @@ class BaseDatastore(ABC):
             user_id (str): ID of the user.
             collection_id (str): Name of the collection.
             document_id (str): ID of the document to retrieve.
-            doc_type (str): Type of document (e.g., scenario, bundle).
+            model_type (Type[BaseModel]): Pydantic class to instantiate.
 
         Returns:
-            BaseModel: Parsed Pydantic model representing the document.
+            Parsed model instance or None if document was not found.
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
-    def fetch_stored_results(
+    def store_document(
             self,
             user_id: str,
             collection_id: str,
-            project_id: str,
-            category_id: str,
-            batch_id: str
-    ) -> Dict[str, Any]:
-        """
-        Retrieve stored batch results for a specific user and batch ID.
-
-        Args:
-            user_id (str): ID of the user.
-            collection_id (str): Main collection name.
-            project_id (str): Project identifier.
-            category_id (str): Category/sub-collection name.
-            batch_id (str): Batch identifier.
-
-        Returns:
-            Dict[str, Any]: Dictionary containing the stored result data.
-        """
-        pass
-
-    @abstractmethod
-    def save_batch_test_results(
-            self,
-            user_id: str,
-            project_id: str,
-            batch_id: str,
-            data: Dict[str, Any]
+            document_id: str,
+            data: Model
     ) -> None:
         """
-        Store batch test results in the datastore for a specific user and batch.
+        Store a pydantic model instance as a document.
 
         Args:
             user_id (str): ID of the user.
-            project_id (str): Project identifier.
-            batch_id (str): Batch identifier (used as document ID).
-            data (Dict[str, Any]): Batch result data to store.
+            collection_id (str): Name of the collection.
+            document_id (str): ID of the document to store.
+            data (Model): Pydantic model instance.
         """
-        pass
+        raise NotImplementedError
+
+    @abstractmethod
+    def query_collection(
+            self,
+            user_id: str,
+            collection_id: str,
+            filters: Dict[str, Any],
+            model_type: Type[Model]
+    ) -> List[Model]:
+        """
+        Query documents in a collection with optional filters.
+
+        Args:
+            user_id (str): ID of the user.
+            collection_id (str): Name of the collection.
+            filters (Dict[str, Any]): Filters to apply to the query (implementation dependent).
+            model_type (Type[BaseModel]): Pydantic class to instantiate.
+
+        Returns:
+            List[Model]: Query results.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_document(
+            self,
+            user_id: str,
+            collection_id: str,
+            document_id: str
+    ) -> bool:
+        """
+        Delete a document.
+
+        Returns:
+            True if deleted, False if not.
+        """
+        raise NotImplementedError
 
 
 class BaseWorkflow(ABC):
