@@ -248,7 +248,7 @@ class FirestoreRepository(BaseRepository):
         """
         Deletes a document from Firestore.
 
-        Args:
+        Fields:
             collection_id (str): Collection reference.
             section_id (str): Section reference.
             sub_collection_id (str): Sub-collection reference.

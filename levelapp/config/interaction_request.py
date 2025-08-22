@@ -15,14 +15,36 @@ load_dotenv()
 
 
 class EndpointConfig(BaseModel):
+    """
+    Configuration class for user system's endpoint.
+
+    Parameters:
+        base_url (HttpUrl): The base url of the endpoint.
+        method (Literal['POST', 'GET']): The HTTP method to use (POST or GET).
+        api_key (SecretStr): The API key to use.
+        bearer_token (SecretStr): The Bearer token to use.
+        model_id (str): The model to use (if applicable).
+        payload_template (Dict[str, Any]): The payload template to use.
+        variables (Dict[str, Any]): The variables to populate the payload template.
+
+    Note:
+        Either you set the environment variables providing the following:\n
+        - ENDPOINT_URL="http://127.0.0.1:8000"
+        - ENDPOINT_API_KEY="<API_KEY>"
+        - BEARER_TOKEN="<BEARER_TOKEN>"
+        - MODEL_ID="meta-llama/Meta-Llama-3.1-8B-Instruct"
+        - PAYLOAD_PATH="../../src/data/payload_example_1.yaml"
+
+        Or manually configure the model instance by assigning the proper values to the model fields.
+    """
     # Required
-    base_url: HttpUrl = Field(default=HttpUrl(os.getenv('ENDPOINT_URL', '')))
+    base_url: HttpUrl = Field(default=HttpUrl(os.getenv('ENDPOINT_URL', 'https://www.example.com')))
     method: Literal["POST", "GET"] = Field(default="POST")
 
     # Auth
     api_key: SecretStr = Field(default=SecretStr(os.getenv('ENDPOINT_API_KEY', '')))
-    bearer_token: SecretStr = Field(default=SecretStr(os.getenv('BEARER_TOKEN', '')))
-    model_id: str = Field(default=os.getenv('MODEL_ID', ''))
+    bearer_token: SecretStr | None = Field(default=SecretStr(os.getenv('BEARER_TOKEN', '')))
+    model_id: str | None = Field(default=os.getenv('MODEL_ID', ''))
 
     # Data
     payload_template: Dict[str, Any] = Field(default_factory=dict)
@@ -81,7 +103,7 @@ class EndpointConfig(BaseModel):
                 path = os.getenv('PAYLOAD_PATH', '')
 
             if not os.path.exists(path):
-                raise FileNotFoundError(f"File not found: {path}")
+                raise FileNotFoundError(f"The provide payload template file path '{path}' does not exist.")
 
             with open(path, "r", encoding="utf-8") as f:
                 if path.endswith((".yaml", ".yml")):
@@ -98,16 +120,21 @@ class EndpointConfig(BaseModel):
                 return data
 
         except FileNotFoundError as e:
-            raise FileNotFoundError(f"[EndpointConfig] Configuration file not found: {e}")
+            raise FileNotFoundError(f"[EndpointConfig] Payload template file '{e.filename}' not found in path.")
 
         except yaml.YAMLError as e:
-            raise ValueError(f"[EndpointConfig] Error parsing YAML file: {e}")
+            raise ValueError(f"[EndpointConfig] Error parsing YAML file:\n{e}")
 
         except json.JSONDecodeError as e:
-            raise ValueError(f"[EndpointConfig] Error parsing JSON file: {e}")
+            raise ValueError(f"[EndpointConfig] Error parsing JSON file:\n{e}")
 
         except IOError as e:
-            raise IOError(f"[EndpointConfig] Error reading file: {e}")
+            raise IOError(f"[EndpointConfig] Error reading file:\n{e}")
 
         except Exception as e:
-            raise ValueError(f"[EndpointConfig] Unexpected error loading configuration: {e}")
+            raise ValueError(f"[EndpointConfig] Unexpected error loading configuration:\n{e}")
+
+
+if __name__ == '__main__':
+    endpoint_config = EndpointConfig()
+    print(f"Dump:\n{endpoint_config.model_dump()}")

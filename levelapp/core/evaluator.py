@@ -114,7 +114,7 @@ Output only the JSON object and nothing else.
 """
 
 
-class InteractionEvaluator(BaseEvaluator):
+class JudgeEvaluator(BaseEvaluator):
     def __init__(self):
         self.prompt_template = EVAL_PROMPT_TEMPLATE
         self.clients = defaultdict(BaseChatClient)

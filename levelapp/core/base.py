@@ -15,19 +15,10 @@ logger = logging.getLogger(__name__)
 Model = TypeVar("Model", bound=BaseModel)
 
 
-class BaseSimulator(ABC):
-    """Abstract base class for simulator components."""
+class BaseEngine(ABC):
+    """Interface for the evaluation classes."""
     @abstractmethod
-    def simulate(self, **kwargs):
-        """Run a stress test simulation based on the provided configuration."""
-        raise NotImplementedError
-
-
-class BaseComparator(ABC):
-    """Abstract base class for comparator components."""
-    @abstractmethod
-    def compare(self):
-        """Compare system output against reference output."""
+    def run(self, **kwargs) -> Any:
         raise NotImplementedError
 
 
@@ -282,22 +273,19 @@ class BaseWorkflow(ABC):
 
     def __init__(self, name: str) -> None:
         self.name = name
-        self.config: Dict[str, Any] = {}
-        self.data: Any = None
-        self.results: Any = None
 
     @abstractmethod
-    def setup(self, config: Dict[str, Any]) -> None:
+    def setup(self, config: Dict[str, Any] | None = None) -> None:
         """Validate and initialize workflow-specific settings."""
         ...
 
     @abstractmethod
-    def load_data(self, config: Dict[str, Any]) -> None:
+    def load_data(self) -> None:
         """Load and preprocess input data."""
         ...
 
     @abstractmethod
-    def execute(self, config: Dict[str, Any]) -> None:
+    def execute(self) -> None:
         """Run the workflow evaluation steps."""
         ...
 

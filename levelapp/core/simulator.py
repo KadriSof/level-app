@@ -9,8 +9,7 @@ from datetime import datetime
 from collections import defaultdict
 from typing import Dict, Any, List
 
-from .base import BaseDatastore, BaseSimulator
-from .evaluator import InteractionEvaluator
+from .base import BaseRepository, BaseEngine, BaseEvaluator
 from ..config.interaction_request import EndpointConfig
 from ..simulator.schemas import (
     InteractionEvaluationResults,
@@ -26,20 +25,20 @@ from ..simulator.utils import (
 )
 
 
-class ConversationSimulator(BaseSimulator):
+class ConversationSimulator(BaseEngine):
     """Conversation simulator component."""
 
     def __init__(
         self,
-        storage_service: BaseDatastore | None = None,
-        evaluation_service: InteractionEvaluator | None = None,
+        storage_service: BaseRepository | None = None,
+        evaluation_service: BaseEvaluator | None = None,
         endpoint_configuration: EndpointConfig | None = None,
     ):
         """
         Initialize the ConversationSimulator.
 
         Args:
-            storage_service (BaseDatastore): Service for saving simulation results.
+            storage_service (BaseRepository): Service for saving simulation results.
             evaluation_service (EvaluationService): Service for evaluating interactions.
             endpoint_configuration (EndpointConfig): Configuration object for VLA.
         """
@@ -57,17 +56,25 @@ class ConversationSimulator(BaseSimulator):
         self.evaluation_verdicts: Dict[str, List[str]] = defaultdict(list)
         self.verdict_summaries: Dict[str, List[str]] = defaultdict(list)
 
-    def simulate(self, **kwargs):
-        """Entry point."""
-        # TODO-0: Add entry point logic here.
-        asyncio.run(
-            self.run_batch_test(
-                test_batch=kwargs.get("test_batch"),
-                attempts=kwargs.get("attempts", 1)
-            )
-        )
+    def setup(
+            self,
+            repository: BaseRepository,
+            evaluator: BaseEvaluator,
+            endpoint_config: EndpointConfig,
+    ) -> None:
+        """
+        Initialize the ConversationSimulator.
 
-    async def run_batch_test(
+        Args:
+            repository (BaseRepository): Repository object for storing simulation results.
+            evaluator (BaseEvaluator): Evaluator object for evaluating interactions.
+            endpoint_config (EndpointConfig): Configuration object for VLA.
+        """
+        self.storage_service = repository
+        self.evaluation_service = evaluator
+        self.endpoint_configuration = endpoint_config
+
+    async def run(
         self,
         test_batch: ScriptsBatch,
         attempts: int = 1,
