@@ -1,4 +1,6 @@
 """levelapp/utils/loader.py"""
+import os
+import yaml
 import json
 import logging
 
@@ -6,6 +8,8 @@ from pathlib import Path
 
 from collections.abc import Mapping, Sequence
 from typing import Any, Type, TypeVar, List, Optional, Dict, Tuple
+
+from dotenv import load_dotenv
 from pydantic import BaseModel, create_model, ValidationError
 
 from rapidfuzz import utils
@@ -13,6 +17,7 @@ from rapidfuzz import utils
 
 logger = logging.getLogger(__name__)
 Model = TypeVar("Model", bound=BaseModel)
+
 
 class DynamicModelBuilder:
     """
@@ -94,44 +99,43 @@ class DataLoader:
     def __init__(self):
         self.builder = DynamicModelBuilder()
         self._name = self.__class__.__name__
+        load_dotenv()
 
     @staticmethod
-    def load_json_file(
-            model: Type[Model],
-            file_path: Path = Path("../data/conversation_example_1.json"),
-    ) -> Model:
-        """
-        Load a JSON file and parse it into a Pydantic model instance.
-
-        Args:
-            model (Type[Model]): The Pydantic model class to instantiate.
-            file_path (Path): Path to the JSON file. Defaults to 'config.json'.
-
-        Returns:
-            Model: An instance of the provided model with data from the JSON file.
-
-        Raises:
-            FileNotFoundError: If the file does not exist.
-            IOError: If there's an IO error reading the file.
-            ValueError: If the file contains invalid JSON.
-            ValidationError: If the data doesn't validate against the model.
-        """
+    def load_configuration(path: str | None = None):
         try:
-            content = file_path.read_text(encoding="utf-8")
-            data = json.loads(content)
-            return model.model_validate(data)
+            if not path:
+                path = os.getenv('WORKFLOW_CONFIG_PATH', 'no-file')
+
+                if not os.path.exists(path):
+                    raise FileNotFoundError(f"The provided configuration file path '{path}' does not exist.")
+
+            with open(path, 'r', encoding='utf-8') as f:
+                if path.endswith((".yaml", ".yml")):
+                    content = yaml.safe_load(f)
+
+                elif path.endswith(".json"):
+                    content = json.load(f)
+
+                else:
+                    raise ValueError("[WorkflowConfiguration] Unsupported file format.")
+
+                return content
 
         except FileNotFoundError as e:
-            raise FileNotFoundError(f"Configuration file not found: {file_path}:\n{e}")
+            raise FileNotFoundError(f"[EndpointConfig] Payload template file '{e.filename}' not found in path.")
 
-        except IOError as e:
-            raise IOError(f"Error reading file {file_path}:\n{e}")
+        except yaml.YAMLError as e:
+            raise ValueError(f"[EndpointConfig] Error parsing YAML file:\n{e}")
 
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in file {file_path}:\n{e}")
+            raise ValueError(f"[EndpointConfig] Error parsing JSON file:\n{e}")
 
-        except ValidationError:
-            raise ValueError(f"Validation error while creating model {model.__name__}")
+        except IOError as e:
+            raise IOError(f"[EndpointConfig] Error reading file:\n{e}")
+
+        except Exception as e:
+            raise ValueError(f"[EndpointConfig] Unexpected error loading configuration:\n{e}")
 
     def load_data(
             self,

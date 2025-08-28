@@ -480,8 +480,8 @@ class FunctionMonitor:
                 'error_rate': stats.error_rate,
                 'cache_hit_rate': stats.cache_hit_rate,
                 'memory_peak_mb': naturalsize(stats.memory_peak),
-                'last_called': stats.recent_call.isoformat(),
-                'recent_execution': stats.recent_call.isoformat(),
+                'last_called': stats.recent_call.isoformat() if stats.recent_call else None,
+                'recent_execution': stats.recent_call.isoformat() if stats.recent_call else None,
                 'is_cached': hasattr(func, 'cache_info'),
                 'cache_info': func.cache_info() if hasattr(func, 'cache_info') else None
             }
