@@ -172,15 +172,15 @@ class EvaluationSession:
         """Create a monitored evaluation step."""
         return StepContext(self, step_name, category)
 
-    def run(self, config: Dict[str, Any]):
+    def run(self, config: Dict[str, Any] | None = None):
         with self.step(step_name="setup", category=MetricType.SETUP):
             self.workflow.setup(config=config)
 
         with self.step(step_name="load_data", category=MetricType.DATA_LOADING):
-            self.workflow.load_data(config=config)
+            self.workflow.load_data()
 
         with self.step(step_name="execute", category=MetricType.EXECUTION):
-            self.workflow.execute(config=config)
+            self.workflow.execute()
 
         with self.step(step_name=f"{self.session_name}.collect_results", category=MetricType.RESULTS_COLLECTION):
             self.workflow.collect_results()

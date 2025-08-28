@@ -1,22 +1,26 @@
 """levelapp/core/workflow.py"""
 import json
-import os
+import asyncio
+import logging
+
 from enum import Enum
 from pathlib import Path
+from pydantic import BaseModel
 from dataclasses import dataclass
-from typing import Dict, Any
-
-import yaml
+from typing import List, Dict, Any
 
 from levelapp.config.interaction_request import EndpointConfig
 from levelapp.core.evaluator import JudgeEvaluator
 from levelapp.repository.firestore import FirestoreRepository
 from levelapp.simulator.schemas import ScriptsBatch
-from levelapp.utils.loader import load_json_file
+from levelapp.utils.loader import DataLoader
 
-from levelapp.core.base import BaseWorkflow, BaseEngine, BaseEvaluator, BaseRepository
+from levelapp.core.base import BaseWorkflow, BaseProcess, BaseEvaluator, BaseRepository
 from levelapp.core.comparator import MetadataComparator
 from levelapp.core.simulator import ConversationSimulator
+
+
+logger = logging.getLogger(__name__)
 
 
 class ExtendedEnum(Enum):
@@ -44,133 +48,114 @@ class EvaluatorType(ExtendedEnum):
 
 @dataclass
 class WorkflowConfiguration:
-    workflow_type: WorkflowType
-    repository_type: RepositoryType
-    evaluator_type: EvaluatorType
+    def __init__(self):
+        self._fields_list: List[str] = [
+            'project_name', 'project_params', 'workflow',
+            'repository', 'repository', 'evaluators', 'reference_data'
+        ]
+        self.process: BaseProcess | None = None
+        self.workflow: WorkflowType | None = None
+        self.repository: RepositoryType | None = None
+        self.evaluators: List[EvaluatorType] | None = None
+        #
+        self.endpoint_config: EndpointConfig | None = None
+        self.reference_data_path: str | None = None
 
-    # Optional overrides
-    endpoint: EndpointConfig | None = None
-    data_source: Path | Any = None
+    def load_configuration(self, path: str | None = None) -> BaseModel | None:
+        loader = DataLoader()
+        config_dict = loader.load_configuration(path=path)
+        config = loader.load_data(data=config_dict, model_name="WorkflowConfiguration")
 
-    @property
-    def engine(self) -> BaseEngine:
-        match self.workflow_type:
+        if not (self.fields_check(config=config) and self.values_check(config=config)):
+            raise ValueError("[WorkflowConfiguration] Invalid configuration")
+
+        self.workflow = WorkflowType(config.workflow)
+        self.repository = RepositoryType(config.repository)
+        self.evaluators = [EvaluatorType(_) for _ in config.evaluators]
+        self.reference_data_path = config.reference_data.path
+        self.endpoint_config = EndpointConfig.model_validate(config.endpoint_configuration.model_dump())
+
+        return config
+
+    # TODO-1: Once the RAG Assessor is complete remove the 'None' from the return type.
+    def build_workflow(self, workflow_type: WorkflowType) -> BaseWorkflow | None:
+        # repository = self.set_repository(repository_type=self.repository)
+        # evaluators = self.set_evaluator(evaluator_types=self.evaluators)
+        match workflow_type:
             case WorkflowType.SIMULATOR:
-                return ConversationSimulator()
+                return SimulatorWorkflow()
             case WorkflowType.COMPARATOR:
-                return MetadataComparator()
+                return ComparatorWorkflow()
             case WorkflowType.ASSESSOR:
-                return ConversationSimulator()
+                return None
 
-    @property
-    def repository(self) -> BaseRepository:
-        match self.repository_type:
+    def set_repository(self, repository_type: RepositoryType) -> BaseRepository | None:
+        match repository_type:
             case RepositoryType.FIRESTORE:
                 return FirestoreRepository()
             case RepositoryType.FILESYSTEM:
-                return FirestoreRepository()
-
-    @property
-    def evaluator(self) -> BaseEvaluator:
-        match self.evaluator_type:
-            case EvaluatorType.JUDGE:
-                return JudgeEvaluator()
-            case EvaluatorType.REFERENCE:
-                return JudgeEvaluator()
-            case EvaluatorType.RAG:
-                return JudgeEvaluator()
-
-    def load_configuration(self, path: str | None = None):
-        try:
-            if not path:
-                path = os.getenv('WORKFLOW_CONFIG_PATH')
-
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"The provided configuration file path '{path}' does not exist.")
-
-            with open(path, 'r', encoding='utf-8') as f:
-                if path.endswith((".yaml", ".yml")):
-                    content = yaml.safe_load(f)
-
-                elif path.endswith(".json"):
-                    content = json.load(f)
-
-                else:
-                    raise ValueError("[WorkflowConfiguration] Unsupported file format.")
-
-                return content
-            
-        except FileNotFoundError as e:
-            raise FileNotFoundError(f"[EndpointConfig] Payload template file '{e.filename}' not found in path.")
-
-        except yaml.YAMLError as e:
-            raise ValueError(f"[EndpointConfig] Error parsing YAML file:\n{e}")
-
-        except json.JSONDecodeError as e:
-            raise ValueError(f"[EndpointConfig] Error parsing JSON file:\n{e}")
-
-        except IOError as e:
-            raise IOError(f"[EndpointConfig] Error reading file:\n{e}")
-
-        except Exception as e:
-            raise ValueError(f"[EndpointConfig] Unexpected error loading configuration:\n{e}")
-
-
-class WorkflowFactory:
-    """Builds configured workflows from a WorkflowConfiguration."""
+                return None
 
     @staticmethod
-    def build(config: WorkflowConfiguration) -> BaseWorkflow:
-        repository = WorkflowFactory._build_repository(config.repository_type)
-        evaluator = WorkflowFactory._build_evaluator(config.evaluator_type)
+    def set_evaluator(evaluator_types: List[EvaluatorType]) -> List[BaseEvaluator]:
+        selected_evaluators: List[BaseEvaluator | None] = []
+        for _ in evaluator_types:
+            match _:
+                case EvaluatorType.JUDGE:
+                    selected_evaluators.append(JudgeEvaluator())
+                case EvaluatorType.REFERENCE:
+                    selected_evaluators.append(None)
+                case EvaluatorType.RAG:
+                    selected_evaluators.append(None)
 
-        if config.workflow_type == WorkflowType.SIMULATOR:
-            workflow = SimulatorWorkflow()
-            workflow.repository = repository
-            workflow.evaluator = evaluator
-            workflow.engine = ConversationSimulator()
-            return workflow
+        return selected_evaluators
 
-        elif config.workflow_type == WorkflowType.COMPARATOR:
-            workflow = ComparatorWorkflow()
-            workflow.config.repository = repository
-            workflow.config.evaluators = [evaluator]
-            workflow.config.engine = MetadataComparator()
-            return workflow
+    def fields_check(self, config: BaseModel) -> bool:
+        config_fields: List = []
+        for field, info in type(config).model_fields.items():
+            config_fields.append(field)
 
-        else:
-            raise NotImplementedError(f"Workflow type {config.workflow_type} not supported yet.")
+        for field in self._fields_list:
+            if field not in config_fields:
+                logger.warning(f"[WorkflowConfiguration] Field '{field}' not found in configuration.")
+                return False
 
-    @staticmethod
-    def _build_repository(rtype: RepositoryType) -> BaseRepository:
-        match rtype:
-            case RepositoryType.FIRESTORE:
-                return FirestoreRepository()
-            case RepositoryType.FILESYSTEM:
-                return FirestoreRepository()
+        return True
 
-    @staticmethod
-    def _build_evaluator(etype: EvaluatorType) -> BaseEvaluator:
-        match etype:
-            case EvaluatorType.JUDGE:
-                return JudgeEvaluator()
-            case EvaluatorType.REFERENCE:
-                return JudgeEvaluator()
-            case EvaluatorType.RAG:
-                return JudgeEvaluator()
+    def values_check(self, config: BaseModel):
+        workflow_type = getattr(config, 'workflow')
+        repository_type = getattr(config, 'repository')
+        evaluator_type = getattr(config, 'evaluators')
+
+        if workflow_type not in WorkflowType.list():
+            logger.warning(f"[WorkflowConfiguration] Workflow type '{workflow_type}' is not supported.")
+            return False
+
+        if repository_type not in RepositoryType.list():
+            logger.warning(f"[WorkflowConfiguration] Repository type '{repository_type}' is not supported.")
+            return False
+
+        for _ in evaluator_type:
+            if _ not in EvaluatorType.list():
+                logger.warning(f"[WorkflowConfiguration] Evaluator type '{evaluator_type}' is not supported.")
+                return False
+
+        if len(evaluator_type) == 0:
+            logger.warning(f"[WorkflowConfiguration] No evaluator type specified.")
+            return False
+
+        return True
 
 
 class SimulatorWorkflow(BaseWorkflow):
 
     def __init__(self) -> None:
         super().__init__(name="ConversationSimulator")
-        self.config: WorkflowConfiguration | None = None
-        self.engine: BaseEngine | None = None
+        self.config: WorkflowConfiguration = WorkflowConfiguration()
+        self.process: ConversationSimulator = ConversationSimulator()
         self.repository: BaseRepository | None = None
-        self.evaluator: BaseEvaluator | None = None
-        self.endpoint_config: EndpointConfig | None = None
-        # TODO-0: Add DataLoader base class and concrete implementation.
-        self.loader = None
+        self.evaluators: List[BaseEvaluator] | None = None
+        self.endpoint_config: EndpointConfig | None = EndpointConfig()
         self.data: ScriptsBatch | None = None
         self.results: Any | None = None
 
@@ -181,29 +166,34 @@ class SimulatorWorkflow(BaseWorkflow):
         Args:
             config (Dict[str, Any]): Configuration dictionary.
         """
-        if not config:
-            self.engine = ConversationSimulator(
-                storage_service=FirestoreRepository(),
-                evaluation_service=JudgeEvaluator(),
-                endpoint_configuration=EndpointConfig()
-            )
+        if config:
+            self.config = config
 
-        self.engine.setup(
-            repository=config.repository,
-            evaluator=config.evaluator,
-            endpoint_config=config.endpoint
+        self.config.load_configuration()
+        self.evaluators = self.config.set_evaluator(evaluator_types=self.config.evaluators)
+        self.repository = self.config.set_repository(repository_type=self.config.repository)
+        self.process.setup(
+            repository=self.repository,
+            evaluator=self.evaluators[0],
+            endpoint_config=self.config.endpoint_config,
         )
 
     def load_data(self) -> None:
-        file_path = Path(self.config.data_source or 'no-path')
+        loader = DataLoader()
+        file_path = Path(self.config.reference_data_path or 'no-path')
         if not file_path.exists():
             raise FileNotFoundError(f"No file path was provide (default value: {file_path})")
 
-        self.data = load_json_file(model=ScriptsBatch, file_path=file_path)
+        data = loader.load_configuration(path=self.config.reference_data_path)
+        self.data = loader.load_data(data=data, model_name="ScriptsBatch")
 
     def execute(self) -> None:
-        data = {"test_batch": self.data}
-        self.results = self.engine.run(**data)
+        if asyncio.iscoroutinefunction(self.process.run):
+            self.results = asyncio.run(
+                self.process.run(test_batch=self.data)
+            )
+        else:
+            self.results = self.process.run(self.data)
 
     def collect_results(self) -> Any:
         return self.results
@@ -215,75 +205,36 @@ class ComparatorWorkflow(BaseWorkflow):
     def __init__(self) -> None:
         super().__init__(name="MetadataComparator")
         self.config: WorkflowConfiguration | None = None
-        self.engine: BaseEngine | None = None
+        self.engine: BaseProcess | None = None
         self.repository: BaseRepository | None = None
         self.evaluator: BaseEvaluator | None = None
         self.data: ScriptsBatch | None = None
         self.results: Any | None = None
 
-    def setup(self, config: Dict[str, Any]) -> None:
-        # TODO-1: Add a default config for the comparator workflow.
-        self.config = config
-        self.engine = MetadataComparator(**self.config)
+    def setup(self, config: WorkflowConfiguration | None = None) -> None:
+        # TODO document why this method is empty
+        pass
 
-    def load_data(self, config: Any) -> None:
-        self.data = config.load()
+    def load_data(self) -> None:
+        # TODO document why this method is empty
+        pass
 
-    def execute(self, config: dict) -> None:
-        if not (self.comparator and self.data):
-            raise RuntimeError("[ComparatorWorkflow] Workflow not properly initialized.")
-        self.results = self.comparator.compare()
+    def execute(self) -> None:
+        # TODO document why this method is empty
+        pass
 
     def collect_results(self) -> Any:
-        return self.results
+        # TODO document why this method is empty
+        pass
 
 
 if __name__ == '__main__':
-    from dotenv import load_dotenv
+    loader_ = DataLoader()
+    config_dict_ = loader_.load_configuration()
+    config_ = loader_.load_data(data=config_dict_, model_name="WorkflowConfiguration")
+    print(f"Workflow configuration:\n{config_.model_dump_json(indent=4)}\n---")
 
+    endpoint_config = EndpointConfig.model_validate(config_.endpoint_configuration.model_dump())
+    endpoint_config.variables = {"user_message": "Hello, world!"}
+    print(f"Endpoint configuration:\n{endpoint_config.model_dump()}\n---")
 
-    def load_configuration(path: str | None = None) -> Dict[str, Any]:
-        try:
-            load_dotenv()
-            if not path:
-                path = os.getenv('WORKFLOW_CONFIG_PATH')
-
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"The provided configuration file path '{path}' does not exist.")
-
-            with open(path, 'r', encoding='utf-8') as f:
-                if path.endswith((".yaml", ".yml")):
-                    content = yaml.safe_load(f)
-
-                elif path.endswith(".json"):
-                    content = json.load(f)
-
-                else:
-                    raise ValueError("[WorkflowConfiguration] Unsupported file format.")
-
-                return content
-
-        except FileNotFoundError as e:
-            raise FileNotFoundError(f"[EndpointConfig] Payload template file '{e.filename}' not found in path.")
-
-        except yaml.YAMLError as e:
-            raise ValueError(f"[EndpointConfig] Error parsing YAML file:\n{e}")
-
-        except json.JSONDecodeError as e:
-            raise ValueError(f"[EndpointConfig] Error parsing JSON file:\n{e}")
-
-        except IOError as e:
-            raise IOError(f"[EndpointConfig] Error reading file:\n{e}")
-
-        except Exception as e:
-            raise ValueError(f"[EndpointConfig] Unexpected error loading configuration:\n{e}")
-
-    sample_config = load_configuration()
-    print(type(sample_config))
-    print(sample_config)
-
-    repository_engine = sample_config['repository']['engine']
-    flag = repository_engine in RepositoryType.list()
-    print(flag)
-    evaluators = sample_config['evaluators']
-    print(len(evaluators))

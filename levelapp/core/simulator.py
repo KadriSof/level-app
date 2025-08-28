@@ -9,7 +9,7 @@ from datetime import datetime
 from collections import defaultdict
 from typing import Dict, Any, List
 
-from .base import BaseRepository, BaseEngine, BaseEvaluator
+from .base import BaseRepository, BaseProcess, BaseEvaluator
 from ..config.interaction_request import EndpointConfig
 from ..simulator.schemas import (
     InteractionEvaluationResults,
@@ -25,7 +25,7 @@ from ..simulator.utils import (
 )
 
 
-class ConversationSimulator(BaseEngine):
+class ConversationSimulator(BaseProcess):
     """Conversation simulator component."""
 
     def __init__(
@@ -48,9 +48,9 @@ class ConversationSimulator(BaseEngine):
         self.evaluation_service = evaluation_service
         self.endpoint_configuration = endpoint_configuration
 
-        self._url = endpoint_configuration.full_url
-        self._credentials = endpoint_configuration.api_key.get_secret_value()
-        self._headers = endpoint_configuration.headers
+        self._url: str | None = None
+        self._credentials: str | None = None
+        self._headers: Dict[str, Any] | None = None
 
         self.test_batch: ScriptsBatch | None = None
         self.evaluation_verdicts: Dict[str, List[str]] = defaultdict(list)
@@ -73,6 +73,12 @@ class ConversationSimulator(BaseEngine):
         self.storage_service = repository
         self.evaluation_service = evaluator
         self.endpoint_configuration = endpoint_config
+
+        print(f"[ConversationSimulator][setup] EndpointConfig:\n{self.endpoint_configuration.model_dump()}")
+
+        self._url = endpoint_config.full_url
+        self._credentials = endpoint_config.api_key.get_secret_value()
+        self._headers = endpoint_config.headers
 
     async def run(
         self,

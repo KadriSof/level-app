@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 Model = TypeVar("Model", bound=BaseModel)
 
 
-class BaseEngine(ABC):
+class BaseProcess(ABC):
     """Interface for the evaluation classes."""
     @abstractmethod
     def run(self, **kwargs) -> Any:

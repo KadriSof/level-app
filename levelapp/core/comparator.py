@@ -6,13 +6,13 @@ from typing import Any, Dict, List, Tuple, Literal
 
 from pydantic import BaseModel
 
-from levelapp.core.base import BaseEngine
+from levelapp.core.base import BaseProcess
 from levelapp.comparator.metrics import MetricsManager, ComparisonResults
 from levelapp.comparator.schemas import EntityMetric, SetMetric
 from levelapp.comparator.utils import format_evaluation_results
 
 
-class MetadataComparator(BaseEngine):
+class MetadataComparator(BaseProcess):
     """Metadata comparator component."""
 
     def __init__(

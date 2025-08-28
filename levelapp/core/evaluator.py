@@ -178,7 +178,7 @@ class JudgeEvaluator(BaseEvaluator):
             ):
                 with attempt:
                     response = await client.acall(message=prompt)
-                    # logger.info(f"[{provider}] Async evaluation: (response type:{type(response)})\n{response}\n{'---' * 10}")
+                    logger.info(f"[{provider}] Async evaluation: (response type:{type(response)})\n{response}\n{'---' * 10}")
                     return JudgeEvaluationResults.from_raw(provider=provider, raw=response)
 
         except RetryError as e:
