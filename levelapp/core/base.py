@@ -1,6 +1,8 @@
 """levelapp/core/base.py"""
+import asyncio
 import datetime
 import json
+
 import httpx
 import requests
 import logging
@@ -13,6 +15,7 @@ from typing import List, Dict, Any, Callable, TypeVar, Type
 logger = logging.getLogger(__name__)
 
 Model = TypeVar("Model", bound=BaseModel)
+Context = TypeVar("Context")
 
 
 class BaseProcess(ABC):
@@ -266,30 +269,3 @@ class BaseRepository(ABC):
             True if deleted, False if not.
         """
         raise NotImplementedError
-
-
-class BaseWorkflow(ABC):
-    """Abstract base class for evaluation workflows."""
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    @abstractmethod
-    def setup(self, config: Dict[str, Any] | None = None) -> None:
-        """Validate and initialize workflow-specific settings."""
-        ...
-
-    @abstractmethod
-    def load_data(self) -> None:
-        """Load and preprocess input data."""
-        ...
-
-    @abstractmethod
-    def execute(self) -> None:
-        """Run the workflow evaluation steps."""
-        ...
-
-    @abstractmethod
-    def collect_results(self) -> Any:
-        """Return unified results structure."""
-        ...
