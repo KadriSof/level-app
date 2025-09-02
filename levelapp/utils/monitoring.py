@@ -502,17 +502,17 @@ class FunctionMonitor:
                 'avg_duration': precisedelta(
                     timedelta(seconds=stats.average_duration),
                     suppress=['minutes'],
-                    format='%.3f'
+                    format='%.4f'
                 ) if stats.average_duration >0 else "0.000s",
                 'min_duration': precisedelta(
                     timedelta(seconds=min_duration),
                     suppress=['minutes'],
-                    format='%.3f'
+                    format='%.4f'
                 ),
                 'max_duration': precisedelta(
                     timedelta(seconds=stats.max_duration),
                     suppress=['minutes'],
-                    format='%.3f'
+                    format='%.4f'
                 ),
                 'error_rate': f"{stats.error_rate:.2f}%",
                 'cache_hit_rate': f"{stats.cache_hit_rate}%",
