@@ -1,10 +1,11 @@
-from dataclasses import dataclass
-from typing import List
+from enum import Enum
 from pydantic import BaseModel
+from dataclasses import dataclass
+from typing import List, Dict, Any
+
 from levelapp.config.interaction_request import EndpointConfig
 from levelapp.core.base import BaseRepository, BaseEvaluator
 from levelapp.utils.loader import DataLoader
-from enum import Enum
 
 
 class ExtendedEnum(Enum):
@@ -36,7 +37,7 @@ class WorkflowConfig:
     # Class-level constant
     _fields_list: List[str] = [
         "project_name",
-        "project_params",
+        "evaluation_params",
         "workflow",
         "repository",
         "evaluator",
@@ -49,13 +50,13 @@ class WorkflowConfig:
         repository: RepositoryType,
         evaluator: EvaluatorType,
         endpoint_config: EndpointConfig,
-        reference_data_path: str | None = None,
+        inputs: Dict[str, Any],
     ):
         self.workflow = workflow
         self.repository = repository
         self.evaluator = evaluator
         self.endpoint_config = endpoint_config
-        self.reference_data_path = reference_data_path
+        self.inputs = inputs
 
     @classmethod
     def load(cls, path: str | None = None) -> "WorkflowConfig":
@@ -70,7 +71,9 @@ class WorkflowConfig:
         workflow = WorkflowType(model_config.workflow)
         repository = RepositoryType(model_config.repository)
         evaluator = EvaluatorType(model_config.evaluator)
+        evaluation_params = model_config.evaluation_params.model_dump()
         reference_data_path = getattr(model_config.reference_data, "path", None)
+        print(f"[WorkflowConfig.load] evaluation params (type:{type(evaluation_params)}):\n{evaluation_params}")
         endpoint_config = EndpointConfig.model_validate(model_config.endpoint_configuration.model_dump())
 
         return cls(
@@ -78,7 +81,7 @@ class WorkflowConfig:
             repository=repository,
             evaluator=evaluator,
             endpoint_config=endpoint_config,
-            reference_data_path=reference_data_path
+            inputs={'reference_data_path': reference_data_path, 'evaluation_params': evaluation_params},
         )
 
     @classmethod
@@ -104,4 +107,4 @@ class WorkflowContext:
     repository: BaseRepository
     evaluator: BaseEvaluator
     endpoint_config: EndpointConfig
-    reference_data_path: str
+    inputs: Dict[str, Any]
