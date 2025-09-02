@@ -7,7 +7,7 @@ from typing import List, Tuple, Callable, cast, Protocol, Optional, Dict
 from rapidfuzz import distance, process, utils, fuzz
 
 from levelapp.comparator.schemas import MetricConfig, EntityMetric, SetMetric
-from levelapp.utils import logging
+from levelapp.aspects import logger
 
 ComputedScores = namedtuple(
     typename="ComputedScores",
