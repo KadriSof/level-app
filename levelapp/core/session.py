@@ -165,7 +165,7 @@ class EvaluationSession:
                 repository=MainFactory.create_repository(self.workflow_config),
                 evaluator=MainFactory.create_evaluator(self.workflow_config),
                 endpoint_config=self.workflow_config.endpoint_config,
-                reference_data_path=self.workflow_config.reference_data_path
+                inputs=self.workflow_config.inputs
             )
             self.workflow = MainFactory.create_workflow(self.workflow_type, context)
 
