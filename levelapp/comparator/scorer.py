@@ -1,4 +1,4 @@
-"""'comparator/metrics.py':"""
+"""'comparator/scorer.py':"""
 import numpy as np
 
 from collections import namedtuple
