@@ -2,7 +2,8 @@
 import os
 
 from typing import Dict, Any
-from ..core.base import BaseChatClient
+from levelapp.core.base import BaseChatClient
+from levelapp.aspects import JSONSanitizer
 
 
 class OpenAIClient(BaseChatClient):
@@ -33,3 +34,11 @@ class OpenAIClient(BaseChatClient):
             "messages": [{"role": "user", "content": message}],
             "max_tokens": self.max_tokens,
         }
+
+    def parse_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        sanitizer = JSONSanitizer()
+        input_tokens = response.get("usage", {}).get("prompt_tokens", 0)
+        output_tokens = response.get("usage", {}).get("completion_tokens", 0)
+        output = response.get("properties", {}).get("output", "")
+        parsed = sanitizer.safe_load_json(text=output)
+        return {"output": parsed, "metadata": {"input_tokens": input_tokens, "output_tokens": output_tokens}}

@@ -3,7 +3,8 @@ import os
 import uuid
 
 from typing import Dict, Any
-from ..core.base import BaseChatClient
+from levelapp.core.base import BaseChatClient
+from levelapp.aspects import JSONSanitizer
 
 
 class IonosClient(BaseChatClient):
@@ -35,3 +36,12 @@ class IonosClient(BaseChatClient):
                 "seed": uuid.uuid4().int & ((1 << 16) - 1),
             },
         }
+
+    def parse_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        sanitizer = JSONSanitizer()
+        input_tokens = response.get("properties", {}).get("inputTokens", "")
+        output_tokens = response.get("outputTokens", {})
+        output = response.get("properties", {}).get("outputTokens", "")
+        cleaned = sanitizer.strip_code_fences(output)
+        parsed = sanitizer.safe_load_json(text=cleaned)
+        return {"output": parsed, "metadata": {"input_tokens": input_tokens, "output_tokens": output_tokens}}

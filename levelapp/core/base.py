@@ -28,11 +28,15 @@ class BaseProcess(ABC):
 class BaseEvaluator(ABC):
     """Abstract base class for evaluator components."""
     @abstractmethod
-    def evaluate(self, provider: str, generated_text: str, reference_text: str):
+    def evaluate(self, provider: str, user_input: str, generated_text: str, reference_text: str):
         """Evaluate system output to reference output."""
         raise NotImplementedError
 
+    async def async_evaluate(self, provider: str, user_input: str, generated_text: str, reference_text: str):
+        """Asynchronous evaluation method."""
+        raise NotImplementedError
 
+# TODO-0: change the '...' notation to a 'NotImplementedError' for better clarity.
 class BaseChatClient(ABC):
     """Abstract base chat client for different LLM providers integration."""
     def __init__(self, **kwargs):
@@ -51,6 +55,10 @@ class BaseChatClient(ABC):
 
     @abstractmethod
     def _build_payload(self, message: str) -> Dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def parse_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
         ...
 
     def call(self, message: str) -> Dict[str, Any]:
