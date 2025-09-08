@@ -2,7 +2,8 @@
 import os
 
 from typing import Dict, Any
-from ..core.base import BaseChatClient
+from levelapp.core.base import BaseChatClient
+from levelapp.aspects import JSONSanitizer
 
 
 class MistralClient(BaseChatClient):
@@ -32,3 +33,11 @@ class MistralClient(BaseChatClient):
             "model": self.model,
             "messages": [{"role": "user", "content": message}],
         }
+
+    def parse_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        sanitizer = JSONSanitizer()
+        input_tokens = response.get("usage", {}).get("prompt_tokens", 0)
+        output_tokens = response.get("usage", {}).get("completion_tokens", 0)
+        output = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        parsed = sanitizer.safe_load_json(text=output)
+        return {'output': parsed, 'metadata': {'input': input_tokens, 'output': output_tokens}}
