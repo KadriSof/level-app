@@ -109,6 +109,8 @@ class DataExtractor:
 
 
 if __name__ == '__main__':
+    from levelapp.comparator import MetadataComparator, MetricsManager
+
     class Pirate(BaseModel):
         name: str
         role: str
@@ -129,6 +131,18 @@ if __name__ == '__main__':
             Pirate(name="Sanji", role="Cook")
         ],
         details={"Ship": "Thousand Sunny", "Reputation": "Legendary", "Bounty": "3,161,000,100+ Berries"}
+    )
+
+    straw_hats_fake = Crew(
+        name="Straw Hat Pirates",
+        crew=[
+            Pirate(name="Demalo Black", role="Captain"),
+            Pirate(name="Manjaro", role="Swordsman"),
+            Pirate(name="Chocolat", role="Navigator"),
+            Pirate(name="Nora Gitsune", role="Doctor"),
+            Pirate(name="Drip", role="Cook")
+        ],
+        details={"Ship": "", "Reputation": "Fake", "Bounty": "0 Berries"}
     )
 
     red_hair_pirates = Crew(
@@ -160,3 +174,20 @@ if __name__ == '__main__':
     print(f"Model Dump:\n{straw_hats.model_dump_json(indent=2)}")
     print(f"Extracted Data (indexed:False):\n{straw_hats_extracted_flat}\n")
     print(f"Extracted Data (indexed:True):\n{straw_hats_extracted_indexed}\n")
+
+    metrics_mapping = {
+        "name": "lev-norm",
+        "crew": "jaro-winkler",
+        "details": "token-set-ratio"
+    }
+
+    metrics_manager = MetricsManager()
+    comparator = MetadataComparator(
+        reference=straw_hats,
+        extracted=straw_hats_fake,
+        metrics_manager=metrics_manager
+    )
+
+    results = comparator.run(indexed_mode=False)
+    print(f"Comparison Results:\n{results}\n")
+
