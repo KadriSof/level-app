@@ -27,10 +27,18 @@ class Scorer(Protocol):
 class MetricsManager:
     """Manages scorer registration, score computation, metric configuration."""
 
-    def __init__(self, metrics_mapping: Optional[Dict[str, MetricConfig]] = None):
+    def __init__(self, metrics_mapping: Dict[str, MetricConfig] | None = None):
         self._scorers: Dict[str, Callable] = {}
-        self.metrics_mapping = metrics_mapping or {}
+        self._metrics_mapping = metrics_mapping or {}
         self._initialize_scorers()
+
+    @property
+    def metrics_mapping(self) -> Dict[str, MetricConfig]:
+        return self._metrics_mapping
+
+    @metrics_mapping.setter
+    def metrics_mapping(self, value: Dict[str, MetricConfig]):
+        self._metrics_mapping = value
 
     def _initialize_scorers(self) -> None:
         """Register existing scorers to prevent residual state."""
@@ -109,7 +117,7 @@ class MetricsManager:
             set_metric=SetMetric.ACCURACY,
             threshold=1
         )
-        return self.metrics_mapping.get(field, default_config)
+        return self._metrics_mapping.get(field, default_config)
 
     def compute_entity_scores(
             self,

@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from levelapp.comparator.extractor import DataExtractor
 from levelapp.core.base import BaseProcess
 from levelapp.comparator.scorer import MetricsManager, ComparisonResults
-from levelapp.comparator.schemas import EntityMetric, SetMetric
+from levelapp.comparator.schemas import EntityMetric, SetMetric, MetricConfig
 from levelapp.comparator.utils import format_evaluation_results
 
 
@@ -17,7 +17,7 @@ class MetadataComparator(BaseProcess):
     def __init__(
             self,
             reference: BaseModel | None = None,
-            extracted: BaseModel | None = None,
+            generated: BaseModel | None = None,
             metrics_manager: MetricsManager | None = None,
     ):
         """
@@ -25,21 +25,42 @@ class MetadataComparator(BaseProcess):
 
         Args:
             reference (BaseModel): Reference BaseModel
-            extracted (BaseModel): Extracted BaseModel
+            generated (BaseModel): Extracted BaseModel
             metrics_manager (MetricsManager): MetricsManager
         """
         self.extractor = DataExtractor()
-        self.metrics_manager = metrics_manager
 
-        self.reference = reference
-        self.extracted = extracted
+        self._reference = reference
+        self._generated = generated
+        self._metrics_manager = metrics_manager
+
         self._evaluation_data: List[
             Tuple[str, list[str], list[str], Any, Any, Any, Any, float]
         ] = []
 
-    def compare(self):
-        # TODO-0: Implement the entry point logic here.
-        pass
+    @property
+    def reference_data(self) -> BaseModel:
+        return self._reference
+
+    @property
+    def generated_data(self) -> BaseModel:
+        return self._generated
+
+    @property
+    def metrics_manager(self) -> MetricsManager:
+        return self._metrics_manager
+
+    @reference_data.setter
+    def reference_data(self, value: BaseModel):
+        self._reference = value
+
+    @generated_data.setter
+    def generated_data(self, value: BaseModel):
+        self._generated = value
+
+    @metrics_manager.setter
+    def metrics_manager(self, value: MetricsManager):
+        self._metrics_manager = value
 
     def _get_score(self, field: str) -> Tuple[EntityMetric, SetMetric, float]:
         """
@@ -51,7 +72,11 @@ class MetadataComparator(BaseProcess):
         Returns:
             A tuple containing the scoring metric and its threshold.
         """
-        config = self.metrics_manager.get_metrics_config(field=field)
+        if self._metrics_manager:
+            config = self._metrics_manager.get_metrics_config(field=field)
+        else:
+            config = MetricConfig()
+
         return config.entity_metric, config.set_metric, config.threshold
 
     def _format_results(
@@ -95,14 +120,14 @@ class MetadataComparator(BaseProcess):
         if not (reference_list or extracted_list):
             return ComparisonResults("", "", entity_metric.value, None, set_metric.value, None)
 
-        scores = self.metrics_manager.compute_entity_scores(
+        scores = self._metrics_manager.compute_entity_scores(
             reference_seq=reference_list,
             extracted_seq=extracted_list,
             scorer=entity_metric,
             pairwise=False
         )
 
-        return self.metrics_manager.compute_set_scores(
+        return self._metrics_manager.compute_set_scores(
             data=scores,
             scorer=set_metric,
             threshold=threshold,
@@ -189,8 +214,8 @@ class MetadataComparator(BaseProcess):
         """
         self._evaluation_data.clear()
 
-        ref_data = self.extractor.deep_extract(model=self.reference, indexed=indexed_mode)
-        ext_data = self.extractor.deep_extract(model=self.extracted, indexed=indexed_mode)
+        ref_data = self.extractor.deep_extract(model=self.reference_data, indexed=indexed_mode)
+        ext_data = self.extractor.deep_extract(model=self.generated_data, indexed=indexed_mode)
 
         results: Dict[str, Dict[str, float]] = {}
 

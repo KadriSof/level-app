@@ -184,7 +184,7 @@ if __name__ == '__main__':
     metrics_manager = MetricsManager()
     comparator = MetadataComparator(
         reference=straw_hats,
-        extracted=straw_hats_fake,
+        generated=straw_hats_fake,
         metrics_manager=metrics_manager
     )
 
