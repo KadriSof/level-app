@@ -77,7 +77,7 @@ class SimulatorWorkflow(BaseWorkflow):
         simulator = ConversationSimulator()
         simulator.setup(
             repository=context.repository,
-            evaluator=context.evaluator,
+            evaluators=context.evaluators,
             endpoint_config=context.endpoint_config,
         )
         return simulator
