@@ -92,10 +92,10 @@ class JudgeEvaluator(BaseEvaluator):
     )
     def evaluate(
             self,
-            provider: str,
-            user_input: str,
             generated_data: str,
-            reference_data: str
+            reference_data: str,
+            user_input: str,
+            provider: str,
     ) -> JudgeEvaluationResults | None:
         prompt = self._build_prompt(
             user_input=user_input,
@@ -125,10 +125,10 @@ class JudgeEvaluator(BaseEvaluator):
     @MonitoringAspect.monitor(name="judge_evaluation", category=MetricType.API_CALL)
     async def async_evaluate(
             self,
-            provider: str,
-            user_input: str,
             generated_data: str,
-            reference_data: str
+            reference_data: str,
+            user_input: str,
+            provider: str,
     ) -> JudgeEvaluationResults | None:
         prompt = self._build_prompt(
             user_input=user_input,
