@@ -24,6 +24,7 @@ from levelapp.simulator.utils import (
     summarize_verdicts,
 )
 from levelapp.aspects import logger
+from levelapp.workflow.schemas import EvaluatorType
 
 
 class ConversationSimulator(BaseProcess):
@@ -32,7 +33,7 @@ class ConversationSimulator(BaseProcess):
     def __init__(
         self,
         repository: BaseRepository | None = None,
-        evaluator: BaseEvaluator | None = None,
+        evaluators: Dict[EvaluatorType, BaseEvaluator] | None = None,
         endpoint_config: EndpointConfig | None = None,
     ):
         """
@@ -40,11 +41,11 @@ class ConversationSimulator(BaseProcess):
 
         Args:
             repository (BaseRepository): Service for saving simulation results.
-            evaluator (EvaluationService): Service for evaluating interactions.
+            evaluators (EvaluationService): Service for evaluating interactions.
             endpoint_config (EndpointConfig): Configuration object for VLA.
         """
         self.repository = repository
-        self.evaluator = evaluator
+        self.evaluators = evaluators
         self.endpoint_config = endpoint_config
 
         self._url: str | None = None
@@ -58,7 +59,7 @@ class ConversationSimulator(BaseProcess):
     def setup(
             self,
             repository: BaseRepository,
-            evaluator: BaseEvaluator,
+            evaluators: Dict[str, BaseEvaluator],
             endpoint_config: EndpointConfig,
     ) -> None:
         """
@@ -66,16 +67,21 @@ class ConversationSimulator(BaseProcess):
 
         Args:
             repository (BaseRepository): Repository object for storing simulation results.
-            evaluator (BaseEvaluator): Evaluator object for evaluating interactions.
+            evaluators (Dict[str, BaseEvaluator]): List of evaluator objects for evaluating interactions.
             endpoint_config (EndpointConfig): Configuration object for VLA.
         """
         self.repository = repository
-        self.evaluator = evaluator
+        self.evaluators = evaluators
         self.endpoint_config = endpoint_config
 
         self._url = endpoint_config.full_url
         self._credentials = endpoint_config.api_key.get_secret_value()
         self._headers = endpoint_config.headers
+
+    def get_evaluator(self, name: EvaluatorType) -> BaseEvaluator:
+        if name not in self.evaluators:
+            raise KeyError(f'[get_evaluator] Evaluator {name} not registered.')
+        return self.evaluators[name]
 
     async def run(
         self,
@@ -281,7 +287,7 @@ class ConversationSimulator(BaseProcess):
             response = await async_interaction_request(
                 url=self.endpoint_config.full_url,
                 headers=self.endpoint_config.headers,
-                payload=self.endpoint_config.response_payload,
+                payload=self.endpoint_config.request_payload,
             )
 
             reference_reply = interaction.reference_reply
@@ -373,14 +379,19 @@ class ConversationSimulator(BaseProcess):
         Returns:
             InteractionEvaluationResults: The evaluation results.
         """
-        openai_eval_task = self.evaluator.async_evaluate(
-            provider="openai",
-            user_input=user_input,
+        judge_evaluator = self.evaluators.get(EvaluatorType.JUDGE)
+
+        if not judge_evaluator:
+            raise ValueError("[evaluate_interaction] No Judge Evaluator found.")
+
+        openai_eval_task = judge_evaluator.async_evaluate(
             generated_data=generated_reply,
             reference_data=reference_reply,
+            user_input=user_input,
+            provider="openai"
         )
 
-        ionos_eval_task = self.evaluator.async_evaluate(
+        ionos_eval_task = judge_evaluator.async_evaluate(
             provider="ionos",
             user_input=user_input,
             generated_data=generated_reply,
