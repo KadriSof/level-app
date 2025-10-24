@@ -1,6 +1,7 @@
 """
 'simulators/service.py': Service layer to manage conversation simulation and evaluation.
 """
+import json
 import time
 import asyncio
 
@@ -112,7 +113,7 @@ class ConversationSimulator(BaseProcess):
         self,
         test_batch: ScriptsBatch,
         attempts: int = 1,
-    ) -> Dict[str, Any]:
+    ) -> Any:
         """
         Run a batch test for the given batch name and details.
 
@@ -138,9 +139,10 @@ class ConversationSimulator(BaseProcess):
             finished_at=finished_at,
             evaluation_summary=self.verdict_summaries,
             average_scores=results.get("average_scores", {}),
+            interaction_results=results.get("results")
         )
 
-        return {"results": results, "status": "COMPLETE"}
+        return results.model_dump_json(indent=2)
 
     async def simulate_conversation(self, attempts: int = 1) -> Dict[str, Any]:
         """
@@ -180,7 +182,7 @@ class ConversationSimulator(BaseProcess):
                 verdicts=verdicts, judge=judge
             )
 
-        return {"scripts": results, "average_scores": overall_average_scores}
+        return {"results": results, "average_scores": overall_average_scores}
 
     async def simulate_single_scenario(
         self, script: ConversationScript,
@@ -209,7 +211,7 @@ class ConversationSimulator(BaseProcess):
             collected_scores: Dict[str, List[Any]] = defaultdict(list)
             collected_verdicts: Dict[str, List[str]] = defaultdict(list)
 
-            initial_interaction_results = await self.simulate_interactions(
+            interaction_results = await self.simulate_interactions(
                 script=script,
                 evaluation_verdicts=collected_verdicts,
                 collected_scores=collected_scores,
@@ -234,7 +236,7 @@ class ConversationSimulator(BaseProcess):
                 "attempt": attempt_number + 1,
                 "script_id": script.id,
                 "total_duration": elapsed_time,
-                "interaction_results": initial_interaction_results,
+                "interaction_results": interaction_results,
                 "evaluation_verdicts": collected_verdicts,
                 "average_scores": single_attempt_scores,
             }
@@ -394,7 +396,7 @@ class ConversationSimulator(BaseProcess):
                 evaluation_results=evaluation_results,
             )
         else:
-            logger.info(f"[{_LOG}] Judge evaluation skipped (no evaluator or no providers).")
+            logger.info(f"{_LOG} Judge evaluation skipped (no evaluator or no providers).")
 
         if metadata_evaluator and reference_metadata:
             self._metadata_evaluation(
@@ -404,7 +406,7 @@ class ConversationSimulator(BaseProcess):
                 evaluation_results=evaluation_results,
             )
         else:
-            logger.info(f"[{_LOG}] Metadata evaluation skipped (no evaluator or no reference metadata).")
+            logger.info(f"{_LOG} Metadata evaluation skipped (no evaluator or no reference metadata).")
 
         evaluation_results.guardrail_flag = 1 if generated_guardrail == reference_guardrail else 0
 
@@ -478,7 +480,7 @@ class ConversationSimulator(BaseProcess):
                 reference_data=reference_metadata,
             )
         except Exception as e:
-            logger.error(f"[{_LOG}] Metadata evaluation failed:\n{e}", exc_info=e)
+            logger.error(f"{_LOG} Metadata evaluation failed:\n{e}", exc_info=e)
 
     @staticmethod
     def store_evaluation_results(
