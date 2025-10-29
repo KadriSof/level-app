@@ -122,13 +122,3 @@ def summarize_verdicts(
         logger.error(f"[summarize_justifications] Error during summarization: {str(e)}", exc_info=True)
         return []
 
-
-# if __name__ == '__main__':
-#     template = {'generated_reply': '${agent_reply}', 'generated_metadata': '${generated_metadata}'}
-#     response_dict = {
-#         'agent_reply': "I'd be happy to help you book something for 10 AM.",
-#         'generated_metadata': {'appointment_type': 'Cardiology', 'date': 'next Monday', 'time': '10 AM'}
-#     }
-#
-#     result = extract_interaction_details(response_dict, template)
-#     print(f"result: {result.model_dump()}")
