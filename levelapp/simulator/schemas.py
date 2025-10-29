@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 from datetime import datetime
 
 from typing import Dict, Any, List
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from levelapp.evaluator.evaluator import JudgeEvaluationResults
 
