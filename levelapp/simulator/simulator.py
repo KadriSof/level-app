@@ -413,6 +413,7 @@ class ConversationSimulator(BaseProcess):
 
         judge_evaluator: BaseEvaluator | None = self.evaluators.get(EvaluatorType.JUDGE, None)
         metadata_evaluator: BaseEvaluator | None = self.evaluators.get(EvaluatorType.REFERENCE, None)
+        similarity_evaluator: BaseEvaluator | None = self.evaluators.get(EvaluatorType.SIMILARITY, None)
 
         evaluation_results = InteractionEvaluationResults()
 
@@ -427,6 +428,16 @@ class ConversationSimulator(BaseProcess):
             )
         else:
             logger.info(f"{_LOG} Judge evaluation skipped (no evaluator or no providers).")
+
+        if similarity_evaluator:
+            await self._similarity_evaluation(
+                generated_reply=generated_reply,
+                reference_reply=reference_reply,
+                similarity_evaluator=similarity_evaluator,
+                evaluation_results=evaluation_results,
+            )
+        else:
+            logger.info(f"{_LOG} Similarity evaluation skipped (no evaluator).")
 
         if metadata_evaluator and reference_metadata:
             self._metadata_evaluation(
@@ -485,6 +496,34 @@ class ConversationSimulator(BaseProcess):
                 continue
 
             evaluation_results.judge_evaluations[provider] = result
+
+    async def _similarity_evaluation(
+            self,
+            generated_reply: str,
+            reference_reply: str,
+            similarity_evaluator: BaseEvaluator,
+            evaluation_results: InteractionEvaluationResults,
+    ) -> None:
+        """
+        Run a Semantic Similarity evaluation.
+
+        Args:
+            generated_reply (str): The generated agent reply.
+            reference_reply (str): The reference agent reply.
+            similarity_evaluator (BaseEvaluator): Evaluator instance.
+            evaluation_results (InteractionEvaluationResults): Results container.
+
+        Returns:
+            None
+        """
+        _LOG: str = f"[{self._CLASS_NAME}][SimilarityEvaluation]"
+
+        results = await similarity_evaluator.async_evaluate(
+            reference_data=reference_reply,
+            generated_data=generated_reply,
+        )
+
+        evaluation_results.similarity_evaluation = results
 
     def _metadata_evaluation(
             self,
